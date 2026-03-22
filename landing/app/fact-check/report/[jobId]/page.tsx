@@ -28,87 +28,117 @@ export default function ReportPage() {
     if (!jobId) return;
 
     const apiUrl = process.env.NEXT_PUBLIC_FACT_CHECK_API_URL || "http://localhost:8000";
-    
-    // Try to fetch a saved/cached report first (for shared links)
-    async function tryFetchSavedReport() {
-      try {
-        const res = await fetch(`${apiUrl}/api/fact-check/report/${jobId}`);
-        const data = await res.json();
-        if (data && data.report && !data.error) {
-          // Saved report found! Load it instantly
-          setReport(data.report);
-          setStage("complete");
-          // Reconstruct claims from saved data
-          if (data.claims) {
-            setClaims(data.claims);
+    let pollTimer: ReturnType<typeof setInterval> | null = null;
+    let timeoutTimer: ReturnType<typeof setTimeout> | null = null;
+    let isComplete = false;
+
+    function loadSavedReport(data: any) {
+      if (isComplete) return;
+      isComplete = true;
+      setReport(data.report);
+      setStage("complete");
+      setError(null); // Clear any previous error
+      if (data.claims) setClaims(data.claims);
+      setAiTextResult({
+        ai_generated_probability: 12,
+        indicators: ["Text contains personal voice.", "No overly generic phrasing detected."]
+      });
+      if (pollTimer) clearInterval(pollTimer);
+      if (timeoutTimer) clearTimeout(timeoutTimer);
+    }
+
+    // Start polling for saved report (works in parallel with SSE)
+    function startPolling() {
+      if (pollTimer || isComplete) return;
+      setStage((prev) => prev || "extracting"); // Show loading state
+      pollTimer = setInterval(async () => {
+        if (isComplete) { if (pollTimer) clearInterval(pollTimer); return; }
+        try {
+          const res = await fetch(`${apiUrl}/api/fact-check/report/${jobId}`);
+          const data = await res.json();
+          if (data && data.report && !data.error) {
+            loadSavedReport(data);
           }
+        } catch {
+          // Keep polling
+        }
+      }, 3000);
+      // Timeout after 3 minutes
+      timeoutTimer = setTimeout(() => {
+        if (pollTimer) clearInterval(pollTimer);
+        if (!isComplete) {
+          setError("Analysis timed out. Please try again.");
+        }
+      }, 180000);
+    }
+
+    // Step 1: Try to fetch a saved report (for shared links / reload)
+    fetch(`${apiUrl}/api/fact-check/report/${jobId}`)
+      .then(res => res.json())
+      .then(data => {
+        if (data && data.report && !data.error) {
+          loadSavedReport(data);
+          return;
+        }
+        // Step 2: No saved report — connect to live SSE stream
+        const es = new EventSource(`${apiUrl}/api/fact-check/stream/${jobId}`);
+        eventSourceRef.current = es;
+
+        es.addEventListener("stage", (e: any) => {
+          const parsed = JSON.parse(e.data);
+          setStage(parsed.stage);
+        });
+
+        es.addEventListener("claim_update", (e: any) => {
+          const parsed = JSON.parse(e.data);
+          setClaims((prev) => ({
+            ...prev,
+            [parsed.claim_id]: {
+              ...prev[parsed.claim_id],
+              status: parsed.status,
+              result: parsed.result || prev[parsed.claim_id]?.result,
+            }
+          }));
+        });
+
+        es.addEventListener("complete", (e: any) => {
+          const parsed = JSON.parse(e.data);
+          isComplete = true;
+          setReport(parsed.report);
+          setStage("complete");
+          setError(null);
+          es.close();
           setAiTextResult({
             ai_generated_probability: 12,
             indicators: ["Text contains personal voice.", "No overly generic phrasing detected."]
           });
-          return true; // Successfully loaded saved report
-        }
-      } catch (e) {
-        // Saved report not available, fall through to live SSE
-      }
-      return false;
-    }
-
-    // Try saved report first, then fall back to live SSE stream
-    tryFetchSavedReport().then((loaded) => {
-      if (loaded) return; // Already loaded from cache
-
-      const es = new EventSource(`${apiUrl}/api/fact-check/stream/${jobId}`);
-      eventSourceRef.current = es;
-
-      es.addEventListener("stage", (e: any) => {
-        const data = JSON.parse(e.data);
-        setStage(data.stage);
-      });
-
-      es.addEventListener("claim_update", (e: any) => {
-        const data = JSON.parse(e.data);
-        setClaims((prev) => ({
-          ...prev,
-          [data.claim_id]: {
-            ...prev[data.claim_id],
-            status: data.status,
-            result: data.result || prev[data.claim_id]?.result,
-          }
-        }));
-      });
-
-      es.addEventListener("complete", (e: any) => {
-        const data = JSON.parse(e.data);
-        setReport(data.report);
-        setStage("complete");
-        es.close();
-        
-        setAiTextResult({
-          ai_generated_probability: 12,
-          indicators: ["Text contains personal voice.", "No overly generic phrasing detected."]
+          if (pollTimer) clearInterval(pollTimer);
+          if (timeoutTimer) clearTimeout(timeoutTimer);
         });
-      });
 
-      es.addEventListener("error", (e: any) => {
-        try {
-          const data = JSON.parse(e.data);
-          setError(data.message);
-          if (!data.recoverable) {
-            es.close();
-          }
-        } catch {
-          // SSE connection error (not a JSON message)
+        // On ANY error (server-sent or browser-level), don't show error — just start polling
+        es.addEventListener("error", () => {
           es.close();
-          setError("Connection to the analysis server was lost.");
-        }
+          startPolling();
+        });
+
+        es.onerror = () => {
+          if (es.readyState === EventSource.CLOSED) {
+            startPolling();
+          }
+        };
+      })
+      .catch(() => {
+        // Fetch failed — start polling as fallback
+        startPolling();
       });
-    });
 
     return () => {
       if (eventSourceRef.current) {
         eventSourceRef.current.close();
       }
+      if (pollTimer) clearInterval(pollTimer);
+      if (timeoutTimer) clearTimeout(timeoutTimer);
     };
   }, [jobId]);
 
@@ -134,7 +164,148 @@ export default function ReportPage() {
   };
 
   const exportPDF = () => {
-    window.print();
+    if (!report) return;
+
+    const scoreColor = report.overall_score > 75 ? '#10b981' : report.overall_score > 40 ? '#f59e0b' : '#ef4444';
+    const credibilityLabel = report.overall_score > 75 ? 'HIGH CREDIBILITY' : report.overall_score > 40 ? 'MODERATE CREDIBILITY' : 'LOW CREDIBILITY';
+    
+    const claimRows = claimEntries.map(([id, c], i) => {
+      const claim = c.result?.claim;
+      const verification = c.result?.verification;
+      const evidence = c.result?.evidence || [];
+      const citations = verification?.citations || evidence;
+      
+      const verdictColors: Record<string, string> = {
+        'TRUE': '#10b981', 'FALSE': '#ef4444', 'PARTIALLY_TRUE': '#f59e0b',
+        'CONFLICTING': '#8b5cf6', 'UNVERIFIABLE': '#6b7280'
+      };
+      const verdictColor = verdictColors[verification?.verdict] || '#6b7280';
+      
+      const citationRows = citations.map((cite: any, idx: number) => `
+        <div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:10px 14px;margin-top:6px;">
+          <div style="display:flex;justify-content:space-between;align-items:center;">
+            <span style="font-weight:600;color:#334155;font-size:12px;">${cite.domain || 'Source'}</span>
+            <a href="${cite.url || cite.source_url || '#'}" style="color:#7c3aed;font-size:11px;">🔗 View Source</a>
+          </div>
+          ${cite.title ? `<div style="font-size:12px;color:#475569;margin-top:4px;font-weight:500;">${cite.title}</div>` : ''}
+          ${(cite.supporting_snippet || cite.snippet) ? `<div style="font-size:11px;color:#64748b;margin-top:6px;border-left:3px solid #7c3aed;padding-left:10px;font-style:italic;">"${cite.supporting_snippet || cite.snippet}"</div>` : ''}
+        </div>
+      `).join('');
+
+      return `
+        <div style="background:white;border:1px solid #e2e8f0;border-radius:12px;padding:20px;margin-bottom:16px;page-break-inside:avoid;">
+          <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:12px;">
+            <span style="font-size:11px;text-transform:uppercase;letter-spacing:1px;color:#94a3b8;font-weight:700;">Claim #${i + 1}</span>
+            <div style="display:flex;align-items:center;gap:12px;">
+              <span style="background:${verdictColor}18;color:${verdictColor};padding:4px 12px;border-radius:20px;font-size:11px;font-weight:700;text-transform:uppercase;border:1px solid ${verdictColor}40;">${verification?.verdict?.replace('_', ' ') || 'PENDING'}</span>
+              <span style="font-size:12px;color:#64748b;font-weight:600;">${verification?.confidence_score || 0}% confidence</span>
+            </div>
+          </div>
+          <p style="font-size:15px;color:#1e293b;line-height:1.6;margin-bottom:14px;font-weight:500;">"${claim?.claim_text || 'N/A'}"</p>
+          ${verification?.reasoning ? `
+            <div style="background:#f1f5f9;border-radius:8px;padding:14px;margin-bottom:12px;">
+              <div style="font-size:11px;text-transform:uppercase;letter-spacing:1px;color:#7c3aed;font-weight:700;margin-bottom:6px;">AI Reasoning</div>
+              <p style="font-size:13px;color:#475569;line-height:1.6;margin:0;">${verification.reasoning}</p>
+            </div>
+          ` : ''}
+          ${citations.length > 0 ? `
+            <div style="margin-top:10px;">
+              <div style="font-size:11px;text-transform:uppercase;letter-spacing:1px;color:#7c3aed;font-weight:700;margin-bottom:8px;">Cited Sources (${citations.length})</div>
+              ${citationRows}
+            </div>
+          ` : ''}
+        </div>
+      `;
+    }).join('');
+
+    const breakdownRows = Object.entries(report.breakdown_by_verdict || {})
+      .filter(([, count]) => (count as number) > 0)
+      .map(([verdict, count]) => `
+        <tr>
+          <td style="padding:8px 16px;border-bottom:1px solid #e2e8f0;font-size:13px;color:#475569;">${verdict.replace('_', ' ')}</td>
+          <td style="padding:8px 16px;border-bottom:1px solid #e2e8f0;font-size:13px;font-weight:700;color:#1e293b;text-align:center;">${count}</td>
+        </tr>
+      `).join('');
+
+    const htmlContent = `
+      <!DOCTYPE html>
+      <html>
+      <head>
+        <meta charset="utf-8">
+        <title>TruthScope Report - ${jobId}</title>
+        <style>
+          @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
+          * { margin: 0; padding: 0; box-sizing: border-box; }
+          body { font-family: 'Inter', -apple-system, sans-serif; background: #ffffff; color: #1e293b; }
+          @media print { body { -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; } }
+        </style>
+      </head>
+      <body>
+        <div style="max-width:750px;margin:0 auto;padding:40px 30px;">
+          <!-- Header -->
+          <div style="display:flex;justify-content:space-between;align-items:center;border-bottom:2px solid #7c3aed;padding-bottom:20px;margin-bottom:30px;">
+            <div>
+              <h1 style="font-size:28px;font-weight:800;background:linear-gradient(135deg,#7c3aed,#a855f7);-webkit-background-clip:text;-webkit-text-fill-color:transparent;">TruthScope</h1>
+              <p style="font-size:12px;color:#94a3b8;margin-top:4px;">Fact-Check Accuracy Report</p>
+            </div>
+            <div style="text-align:right;">
+              <p style="font-size:11px;color:#94a3b8;">Job ID</p>
+              <p style="font-size:11px;color:#64748b;font-family:monospace;">${jobId}</p>
+              <p style="font-size:11px;color:#94a3b8;margin-top:4px;">Generated: ${new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric', hour: '2-digit', minute: '2-digit' })}</p>
+            </div>
+          </div>
+
+          <!-- Overall Score -->
+          <div style="background:linear-gradient(135deg,#f8fafc,#f1f5f9);border:2px solid ${scoreColor}30;border-radius:16px;padding:30px;margin-bottom:30px;text-align:center;">
+            <div style="width:120px;height:120px;border-radius:50%;border:8px solid ${scoreColor};display:flex;align-items:center;justify-content:center;margin:0 auto 16px;">
+              <div>
+                <span style="font-size:36px;font-weight:800;color:${scoreColor};">${report.overall_score}%</span>
+              </div>
+            </div>
+            <div style="font-size:14px;font-weight:800;letter-spacing:2px;text-transform:uppercase;color:${scoreColor};margin-bottom:4px;">${credibilityLabel}</div>
+            <p style="font-size:12px;color:#94a3b8;">Based on ${report.total_claims || claimEntries.length} verified claims</p>
+          </div>
+
+          <!-- Verdict Breakdown -->
+          ${breakdownRows ? `
+          <div style="margin-bottom:30px;">
+            <h2 style="font-size:16px;font-weight:700;color:#1e293b;margin-bottom:12px;display:flex;align-items:center;">📊 Verdict Breakdown</h2>
+            <table style="width:100%;border-collapse:collapse;border:1px solid #e2e8f0;border-radius:8px;overflow:hidden;">
+              <thead>
+                <tr style="background:#f8fafc;">
+                  <th style="padding:10px 16px;text-align:left;font-size:12px;color:#64748b;text-transform:uppercase;letter-spacing:1px;">Verdict</th>
+                  <th style="padding:10px 16px;text-align:center;font-size:12px;color:#64748b;text-transform:uppercase;letter-spacing:1px;">Count</th>
+                </tr>
+              </thead>
+              <tbody>${breakdownRows}</tbody>
+            </table>
+          </div>
+          ` : ''}
+
+          <!-- Claims -->
+          <div style="margin-bottom:30px;">
+            <h2 style="font-size:16px;font-weight:700;color:#1e293b;margin-bottom:16px;display:flex;align-items:center;">🔍 Detailed Claim Analysis</h2>
+            ${claimRows}
+          </div>
+
+          <!-- Footer -->
+          <div style="border-top:1px solid #e2e8f0;padding-top:20px;text-align:center;">
+            <p style="font-size:11px;color:#94a3b8;">This report was generated by <strong style="color:#7c3aed;">TruthScope AI</strong>. Results are based on automated fact-checking and should be independently verified.</p>
+            <p style="font-size:10px;color:#cbd5e1;margin-top:6px;">© ${new Date().getFullYear()} TruthScope — Illuminating truth in a world of misinformation</p>
+          </div>
+        </div>
+      </body>
+      </html>
+    `;
+
+    const printWindow = window.open('', '_blank');
+    if (printWindow) {
+      printWindow.document.write(htmlContent);
+      printWindow.document.close();
+      setTimeout(() => {
+        printWindow.print();
+      }, 500);
+    }
   };
 
   return (
