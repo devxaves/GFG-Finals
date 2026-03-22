@@ -1,0 +1,300 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <title>TruthScope OAuth Test</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 50px auto;
+            padding: 20px;
+            background: #f5f5f5;
+        }
+
+        .container {
+            background: white;
+            padding: 30px;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+        }
+
+        h1 {
+            color: #6366f1;
+        }
+
+        button {
+            background: #6366f1;
+            color: white;
+            border: none;
+            padding: 12px 24px;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 16px;
+            margin: 10px 5px;
+        }
+
+        button:hover {
+            background: #4f46e5;
+        }
+
+        .result {
+            margin-top: 20px;
+            padding: 15px;
+            border-radius: 6px;
+            font-family: monospace;
+            white-space: pre-wrap;
+            word-wrap: break-word;
+        }
+
+        .success {
+            background: #dcfce7;
+            border: 1px solid #86efac;
+            color: #166534;
+        }
+
+        .error {
+            background: #fee2e2;
+            border: 1px solid #fca5a5;
+            color: #991b1b;
+        }
+
+        .info {
+            background: #dbeafe;
+            border: 1px solid #93c5fd;
+            color: #1e40af;
+        }
+
+        .step {
+            margin: 20px 0;
+            padding: 15px;
+            background: #f9fafb;
+            border-left: 4px solid #6366f1;
+        }
+
+        .step h3 {
+            margin-top: 0;
+        }
+    </style>
+</head>
+
+<body>
+    <div class="container">
+        <h1>🔍 TruthScope OAuth Diagnostic Tool</h1>
+        <p>Use this tool to diagnose why the sign-in is stuck.</p>
+
+        <div class="step">
+            <h3>Step 1: Get Extension ID</h3>
+            <p>Your Chrome extension ID is needed to configure OAuth.</p>
+            <button onclick="getExtensionId()">Get Extension ID</button>
+            <div id="extensionIdResult"></div>
+        </div>
+
+        <div class="step">
+            <h3>Step 2: Test OAuth Flow</h3>
+            <p>Click to test if Chrome's identity API can get a token.</p>
+            <button onclick="testOAuth()">Test OAuth</button>
+            <div id="oauthResult"></div>
+        </div>
+
+        <div class="step">
+            <h3>Step 3: Test Backend Connection</h3>
+            <p>Check if the backend is reachable.</p>
+            <button onclick="testBackend()">Test Backend</button>
+            <div id="backendResult"></div>
+        </div>
+
+        <div class="step">
+            <h3>Step 4: Get Configuration Instructions</h3>
+            <p>After getting your Extension ID above, click here for setup instructions.</p>
+            <button onclick="showInstructions()">Show Setup Instructions</button>
+            <div id="instructions"></div>
+        </div>
+    </div>
+
+    <script>
+        let extensionId = null;
+
+        function getExtensionId() {
+            const resultDiv = document.getElementById('extensionIdResult');
+            if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.id) {
+                extensionId = chrome.runtime.id;
+                resultDiv.innerHTML = `
+                    <div class="result success">
+                        ✅ Extension ID Found:<br>
+                        <strong>${extensionId}</strong><br><br>
+                        📋 <button onclick="copyToClipboard('${extensionId}')">Copy to Clipboard</button>
+                    </div>
+                `;
+            } else {
+                resultDiv.innerHTML = `
+                    <div class="result error">
+                        ❌ Error: This must be opened from the extension context.<br>
+                        Try opening this file by clicking the extension icon and navigating to it,<br>
+                        or check chrome://extensions/ for your extension ID.
+                    </div>
+                `;
+            }
+        }
+
+        function testOAuth() {
+            const resultDiv = document.getElementById('oauthResult');
+            resultDiv.innerHTML = `<div class="result info">🔄 Testing OAuth flow...</div>`;
+
+            if (typeof chrome === 'undefined' || !chrome.identity) {
+                resultDiv.innerHTML = `
+                    <div class="result error">
+                        ❌ Chrome Identity API not available.<br>
+                        Make sure you're running this in a Chrome extension context.
+                    </div>
+                `;
+                return;
+            }
+
+            chrome.identity.getAuthToken({ interactive: true }, (token) => {
+                if (chrome.runtime.lastError) {
+                    const error = chrome.runtime.lastError.message;
+                    resultDiv.innerHTML = `
+                        <div class="result error">
+                            ❌ OAuth Error:<br>
+                            ${error}<br><br>
+                            ${getErrorHelp(error)}
+                        </div>
+                    `;
+                } else if (token) {
+                    resultDiv.innerHTML = `
+                        <div class="result success">
+                            ✅ OAuth Success!<br>
+                            Token received (length: ${token.length} characters)<br>
+                            Token preview: ${token.substring(0, 20)}...<br><br>
+                            Your OAuth configuration is working correctly! ✨
+                        </div>
+                    `;
+                } else {
+                    resultDiv.innerHTML = `
+                        <div class="result error">
+                            ❌ No token received and no error reported.<br>
+                            This is unusual. Try reloading the extension.
+                        </div>
+                    `;
+                }
+            });
+        }
+
+        function testBackend() {
+            const resultDiv = document.getElementById('backendResult');
+            resultDiv.innerHTML = `<div class="result info">🔄 Testing backend connection...</div>`;
+
+            fetch('http://127.0.0.1:8080/')
+                .then(response => response.json())
+                .then(data => {
+                    resultDiv.innerHTML = `
+                        <div class="result success">
+                            ✅ Backend is running!<br>
+                            Response: ${JSON.stringify(data, null, 2)}
+                        </div>
+                    `;
+                })
+                .catch(error => {
+                    resultDiv.innerHTML = `
+                        <div class="result error">
+                            ❌ Cannot connect to backend:<br>
+                            ${error.message}<br><br>
+                            Make sure check_text.py is running on port 8080.
+                        </div>
+                    `;
+                });
+        }
+
+        function showInstructions() {
+            const instructionsDiv = document.getElementById('instructions');
+            if (!extensionId) {
+                instructionsDiv.innerHTML = `
+                    <div class="result error">
+                        ⚠️ Please run "Step 1: Get Extension ID" first!
+                    </div>
+                `;
+                return;
+            }
+
+            const redirectUri1 = `https://${extensionId}.chromiumapp.org/`;
+            const redirectUri2 = `https://${extensionId}.chromiumapp.org/callback`;
+
+            instructionsDiv.innerHTML = `
+                <div class="result info">
+                    <h4>📝 Google Cloud Console Setup Instructions:</h4>
+                    
+                    <ol style="margin: 15px 0;">
+                        <li style="margin: 10px 0;">
+                            Go to: <a href="https://console.cloud.google.com/apis/credentials?project=truthscope-prod-2025" target="_blank">
+                                Google Cloud Console - Credentials
+                            </a>
+                        </li>
+                        <li style="margin: 10px 0;">
+                            Click on your OAuth 2.0 Client ID:<br>
+                            <strong>705488681605-p8ck7c4uubiqfo81p2eosv92v0d336ff</strong>
+                        </li>
+                        <li style="margin: 10px 0;">
+                            Under "Authorized redirect URIs", click "+ ADD URI"
+                        </li>
+                        <li style="margin: 10px 0;">
+                            Add these two URIs:<br><br>
+                            <code style="background: #1f2937; color: #10b981; padding: 8px; display: block; margin: 5px 0; border-radius: 4px;">
+                                ${redirectUri1}
+                            </code>
+                            <button onclick="copyToClipboard('${redirectUri1}')">Copy URI 1</button>
+                            <br><br>
+                            <code style="background: #1f2937; color: #10b981; padding: 8px; display: block; margin: 5px 0; border-radius: 4px;">
+                                ${redirectUri2}
+                            </code>
+                            <button onclick="copyToClipboard('${redirectUri2}')">Copy URI 2</button>
+                        </li>
+                        <li style="margin: 10px 0;">
+                            Click "SAVE"
+                        </li>
+                        <li style="margin: 10px 0;">
+                            Wait 1-2 minutes for changes to propagate
+                        </li>
+                        <li style="margin: 10px 0;">
+                            Reload your extension at chrome://extensions/
+                        </li>
+                        <li style="margin: 10px 0;">
+                            Try signing in again! 🚀
+                        </li>
+                    </ol>
+                </div>
+            `;
+        }
+
+        function getErrorHelp(error) {
+            if (error.includes('OAuth2')) {
+                return `
+                    <strong>Likely cause:</strong> OAuth redirect URI not configured.<br>
+                    Click "Step 4: Get Configuration Instructions" above to fix this.
+                `;
+            } else if (error.includes('cancelled')) {
+                return `
+                    <strong>Likely cause:</strong> You cancelled the sign-in popup.<br>
+                    Try clicking "Test OAuth" again and complete the sign-in.
+                `;
+            } else if (error.includes('network')) {
+                return `
+                    <strong>Likely cause:</strong> Network connection issue.<br>
+                    Check your internet connection.
+                `;
+            }
+            return 'Check the error message above for more details.';
+        }
+
+        function copyToClipboard(text) {
+            navigator.clipboard.writeText(text).then(() => {
+                alert('✅ Copied to clipboard!');
+            }).catch(err => {
+                console.error('Copy failed:', err);
+                alert('❌ Copy failed. Please copy manually.');
+            });
+        }
+    </script>
+</body>
+
+</html>
