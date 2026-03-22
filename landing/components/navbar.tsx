@@ -82,20 +82,20 @@ export function Navbar() {
               key={href}
               href={`/#${href}`}
               onClick={(e) => {
-                if(window.location.pathname === '/') {
+                if(typeof window !== "undefined" && window.location.pathname === '/') {
                     handleSmoothScroll(e, href);
                 }
               }}
               className={cn(
                 "text-sm font-medium transition-all duration-300 relative group cursor-pointer",
-                activeSection === href && window.location.pathname === '/' ? "text-primary" : "text-foreground/80 hover:text-primary",
+                activeSection === href && (typeof window !== "undefined" && window.location.pathname === '/') ? "text-primary" : "text-foreground/80 hover:text-primary",
               )}
             >
               {label}
               <span
                 className={cn(
                   "absolute -bottom-1 left-0 h-0.5 bg-gradient-to-r from-primary to-purple-600 transition-all duration-300",
-                  activeSection === href && window.location.pathname === '/' ? "w-full" : "w-0 group-hover:w-full",
+                  activeSection === href && (typeof window !== "undefined" && window.location.pathname === '/') ? "w-full" : "w-0 group-hover:w-full",
                 )}
               />
             </a>
@@ -148,14 +148,14 @@ export function Navbar() {
                 key={href}
                 href={`/#${href}`}
                 onClick={(e) => {
-                  if(window.location.pathname === '/') {
+                  if(typeof window !== "undefined" && window.location.pathname === '/') {
                       handleSmoothScroll(e, href);
                   }
                   setIsMenuOpen(false)
                 }}
                 className={cn(
                   "text-sm font-medium transition-colors px-2 py-1.5 rounded-md cursor-pointer",
-                  activeSection === href && window.location.pathname === '/'
+                  activeSection === href && (typeof window !== "undefined" && window.location.pathname === '/')
                     ? "bg-primary/10 text-primary"
                     : "hover:bg-muted hover:text-primary",
                 )}
