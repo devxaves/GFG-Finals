@@ -41,6 +41,7 @@ app.add_middleware(
 )
 
 active_jobs = {}
+completed_reports = {}  # { job_id: { report: {...}, claims: [...], completed_at: "..." } }
 
 @app.get("/api/fact-check/health")
 async def health_check():
@@ -126,6 +127,17 @@ async def fact_check_generator(job_id: str):
                 await queue.put(f"event: claim_update\ndata: {json.dumps({'claim_id': cr.claim.id, 'status': 'done', 'result': cr.model_dump(mode='json')})}\n\n")
             
             final_report = build_report(claim_reports)
+            
+            # Save completed report for shared links & history
+            from datetime import datetime
+            completed_reports[job_id] = {
+                "report": final_report.model_dump(mode='json'),
+                "claims": {cr.claim.id: {'status': 'done', 'result': cr.model_dump(mode='json')} for cr in claim_reports},
+                "completed_at": datetime.utcnow().isoformat() + "Z",
+                "input_content": content[:200] if content else ""
+            }
+            logger.info(f"Saved completed report for job {job_id}")
+            
             await queue.put(f"event: complete\ndata: {json.dumps({'report': final_report.model_dump(mode='json')})}\n\n")
             
         except Exception as e:
@@ -146,6 +158,31 @@ async def fact_check_generator(job_id: str):
 @app.get("/api/fact-check/stream/{job_id}")
 async def stream_report(job_id: str):
     return StreamingResponse(fact_check_generator(job_id), media_type="text/event-stream")
+
+@app.get("/api/fact-check/report/{job_id}")
+async def get_saved_report(job_id: str):
+    """Retrieve a previously completed report by job ID (for shared links)."""
+    if job_id in completed_reports:
+        return completed_reports[job_id]
+    return {"error": "Report not found. It may have expired or the server was restarted."}
+
+@app.get("/api/fact-check/history")
+async def get_history():
+    """Return a list of all completed reports for the history page."""
+    history = []
+    for job_id, data in completed_reports.items():
+        report = data.get("report", {})
+        history.append({
+            "id": job_id,
+            "title": data.get("input_content", "Untitled Analysis")[:100],
+            "overallScore": report.get("overall_score", 0),
+            "claimCount": report.get("total_claims", 0),
+            "verdictBreakdown": report.get("breakdown_by_verdict", {}),
+            "completedAt": data.get("completed_at", "")
+        })
+    # Most recent first
+    history.reverse()
+    return {"history": history}
 
 @app.post("/api/detect-ai-text", response_model=AIDetectionResult)
 async def detect_ai_text(request: TextDetectionRequest):
@@ -217,6 +254,25 @@ async def analyze_media(request: MediaAnalysisRequest, req: Request):
 @app.post("/api/extension/analyze-text")
 async def extension_analyze_text(request: ExtensionTextRequest):
     content = request.article_text
+    
+    # [1] FAST CACHE RETRIEVAL
+    if request.url:
+        import hashlib
+        from models.database import SessionLocal, ArticleCache
+        if SessionLocal:
+            try:
+                url_hash = hashlib.md5(request.url.encode('utf-8')).hexdigest()
+                db = SessionLocal()
+                # Run database selection in a thread to keep FastAPI completely async
+                cached = await asyncio.to_thread(lambda: db.query(ArticleCache).filter(ArticleCache.url_hash == url_hash).first())
+                if cached:
+                    db.close()
+                    logger.info(f"CACHE HIT! Serving instant response for {request.url}")
+                    return json.loads(cached.result_json)
+                db.close()
+            except Exception as e:
+                logger.error(f"Cache lookup failed: {e}")
+    
     
     # Refine/truncate large raw HTML/text locally to prevent LLM token limits
     if content and len(content) > 10000:
@@ -325,7 +381,7 @@ async def extension_analyze_text(request: ExtensionTextRequest):
         if not reasoning_list:
             reasoning_list = ["The claims align with verified information and no significant contradictions were found."]
             
-        return {
+        response_data = {
             "textResult": {
                 "label": label,
                 "score": max(0.5, confidence_metric), 
@@ -336,6 +392,46 @@ async def extension_analyze_text(request: ExtensionTextRequest):
                 "related_news": related_news
             }
         }
+        
+        # Save to completed_reports for History page + Shareable links
+        from datetime import datetime
+        ext_job_id = f"job_{uuid.uuid4().hex}"
+        completed_reports[ext_job_id] = {
+            "report": final_report.model_dump(mode='json'),
+            "claims": {cr.claim.id: {'status': 'done', 'result': cr.model_dump(mode='json')} for cr in claim_reports},
+            "completed_at": datetime.utcnow().isoformat() + "Z",
+            "input_content": (request.url or content[:200]) if content else "Extension Analysis",
+            "source": "extension"
+        }
+        logger.info(f"Saved extension analysis to history as {ext_job_id}")
+        
+        # [2] SAVE RESPONSE TO CACHE
+        if request.url:
+            import hashlib
+            from models.database import SessionLocal, ArticleCache
+            if SessionLocal:
+                try:
+                    url_hash = hashlib.md5(request.url.encode('utf-8')).hexdigest()
+                    db = SessionLocal()
+                    
+                    def perform_db_save():
+                        existing = db.query(ArticleCache).filter(ArticleCache.url_hash == url_hash).first()
+                        if not existing:
+                            new_cache = ArticleCache(
+                                url_hash=url_hash,
+                                url=request.url,
+                                result_json=json.dumps(response_data)
+                            )
+                            db.add(new_cache)
+                            db.commit()
+                            
+                    await asyncio.to_thread(perform_db_save)
+                    db.close()
+                    logger.info(f"CACHE MISS - Successfully analyzed and cached {request.url}")
+                except Exception as e:
+                    logger.error(f"Failed to save to database cache: {e}")
+                    
+        return response_data
     except Exception as e:
         logger.error(f"Extension text analysis failed: {e}")
         return {"textResult": {"error": str(e)}}

@@ -78,7 +78,7 @@ export function HeroSection() {
               identify misinformation with confidence.
             </p>
             <div className="flex flex-col sm:flex-row gap-4">
-            <a href="https://github.com/sujayx07/TruthScope" target="_blank">
+            <a href="https://github.com/devxaves/GFG-Finals" target="_blank">
               <Button
                 size="lg"
                 className="group relative overflow-hidden rounded-lg bg-gradient-to-r from-primary to-purple-600 hover:from-primary/90 hover:to-purple-600/90 transition-all duration-300 shadow-lg hover:shadow-primary/20"

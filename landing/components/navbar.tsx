@@ -71,6 +71,13 @@ export function Navbar() {
             Fact Checker
             <span className="absolute -bottom-1 left-0 h-0.5 bg-gradient-to-r from-blue-400 to-purple-600 transition-all duration-300 w-full" />
           </Link>
+          <Link
+            href="/fact-check/history"
+            className="text-sm font-medium text-foreground/80 hover:text-primary transition-all duration-300 relative group cursor-pointer"
+          >
+            History
+            <span className="absolute -bottom-1 left-0 h-0.5 bg-gradient-to-r from-primary to-purple-600 transition-all duration-300 w-0 group-hover:w-full" />
+          </Link>
           {[
             { href: "hero", label: "Home" },
             { href: "features", label: "Features" },
@@ -112,7 +119,7 @@ export function Navbar() {
           <SignedIn>
             <UserButton afterSignOutUrl="/" />
           </SignedIn>
-          <a href="https://github.com/sujayx07/TruthScope" target="_blank">
+          <a href="https://github.com/devxaves/GFG-Finals" target="_blank">
           <Button className="relative overflow-hidden group bg-gradient-to-r from-primary to-purple-600 hover:from-primary/90 hover:to-purple-600/90 transition-all duration-300">
             <span className="relative z-10 flex items-center">
               Add to Chrome
@@ -173,7 +180,7 @@ export function Navbar() {
             <SignedIn>
               <UserButton afterSignOutUrl="/" />
             </SignedIn>
-            <a href="https://github.com/sujayx07/TruthScope" target="_blank">
+            <a href="https://github.com/devxaves/GFG-Finals" target="_blank">
             <Button className="w-full justify-center mt-2 bg-gradient-to-r from-primary to-purple-600">
               Add to Chrome
               <ArrowRight className="ml-2 h-4 w-4" />

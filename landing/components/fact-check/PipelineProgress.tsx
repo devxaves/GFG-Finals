@@ -22,12 +22,12 @@ export function PipelineProgress({ currentStage }: PipelineProgressProps) {
   };
 
   return (
-    <div className="w-full bg-slate-900/40 border border-slate-800 rounded-2xl p-6 mb-8">
+    <div className="w-full bg-card/40 backdrop-blur-xl border border-border rounded-2xl p-6 mb-8">
       <div className="flex justify-between items-center relative">
         {/* Connecting line */}
-        <div className="absolute top-1/2 left-[10%] right-[10%] h-1 bg-slate-800 -translate-y-1/2 z-0">
+        <div className="absolute top-1/2 left-[10%] right-[10%] h-1 bg-muted -translate-y-1/2 z-0">
           <motion.div 
-            className="h-full bg-blue-500"
+            className="h-full bg-gradient-to-r from-primary to-purple-600"
             initial={{ width: "0%" }}
             animate={{ 
               width: currentStage === "extracting" ? "10%" : 
@@ -48,26 +48,26 @@ export function PipelineProgress({ currentStage }: PipelineProgressProps) {
               <motion.div
                 initial={false}
                 animate={{
-                  backgroundColor: status === "active" ? "#1e3a8a" : status === "complete" ? "#10b981" : "#0f172a",
-                  borderColor: status === "active" ? "#3b82f6" : status === "complete" ? "#059669" : "#334155",
+                  backgroundColor: status === "active" ? "hsl(280, 23%, 23%)" : status === "complete" ? "#10b981" : "hsl(var(--background))",
+                  borderColor: status === "active" ? "hsl(280, 60%, 50%)" : status === "complete" ? "#059669" : "hsl(var(--border))",
                   scale: status === "active" ? 1.1 : 1
                 }}
                 className={cn(
                   "w-12 h-12 rounded-full border-2 flex items-center justify-center transition-colors duration-300",
-                  status === "active" ? "shadow-[0_0_20px_rgba(59,130,246,0.5)]" : ""
+                  status === "active" ? "shadow-[0_0_20px_rgba(147,51,234,0.5)]" : ""
                 )}
               >
                 {status === "complete" ? (
                   <Check className="w-6 h-6 text-white" />
                 ) : status === "active" ? (
-                  <Loader2 className="w-6 h-6 text-blue-300 animate-spin" />
+                  <Loader2 className="w-6 h-6 text-purple-300 animate-spin" />
                 ) : (
-                  <Icon className="w-5 h-5 text-slate-500" />
+                  <Icon className="w-5 h-5 text-muted-foreground" />
                 )}
               </motion.div>
               <span className={cn(
                 "text-sm font-medium transition-colors duration-300",
-                status === "active" ? "text-blue-400 font-bold" : status === "complete" ? "text-emerald-400" : "text-slate-500"
+                status === "active" ? "text-primary font-bold" : status === "complete" ? "text-emerald-400" : "text-muted-foreground"
               )}>
                 {stage.title}
               </span>
