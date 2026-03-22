@@ -31,14 +31,11 @@ app = FastAPI(
     version="1.0.0"
 )
 
-# Configure CORS
-cors_origins_str = os.getenv("CORS_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000")
-origins = [origin.strip() for origin in cors_origins_str.split(",") if origin.strip()]
-
+# Configure CORS for global access (required for Chrome Extension on any domain)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=origins,
-    allow_credentials=True,
+    allow_origins=["*"],
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
