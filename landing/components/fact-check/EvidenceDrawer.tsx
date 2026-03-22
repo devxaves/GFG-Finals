@@ -60,12 +60,15 @@ export function EvidenceDrawer({
                             </div>
                             <span className="font-medium text-slate-200">{cite.domain}</span>
                           </div>
-                          <a href={cite.url} target="_blank" rel="noreferrer" className="text-blue-400 hover:text-blue-300 transition-colors">
+                          <a href={cite.url || cite.source_url} target="_blank" rel="noreferrer" className="text-blue-400 hover:text-blue-300 transition-colors">
                             <ExternalLink className="w-4 h-4" />
                           </a>
                         </div>
-                        <p className="mt-3 text-sm text-slate-400 italic border-l-2 border-slate-700 pl-3">
-                          "{cite.supporting_snippet}"
+                        {cite.title && (
+                          <div className="mt-2 text-xs font-bold text-slate-300">{cite.title}</div>
+                        )}
+                        <p className="mt-2 text-sm text-slate-400 italic border-l-2 border-slate-700 pl-3">
+                          "{cite.supporting_snippet || cite.snippet}"
                         </p>
                       </div>
                     ))}

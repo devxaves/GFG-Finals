@@ -130,7 +130,7 @@ export default function ReportPage() {
                       verdict={c.result?.verification?.verdict}
                       confidence={c.result?.verification?.confidence_score}
                       reasoning={c.result?.verification?.reasoning}
-                      citations={c.result?.verification?.citations}
+                      citations={c.result?.verification?.citations?.length > 0 ? c.result.verification.citations : c.result?.evidence}
                     />
                   ))}
                 </AnimatePresence>
