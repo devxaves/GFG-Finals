@@ -13,7 +13,7 @@ SOCIAL_MEDIA_DOMAINS = [
     "threads.net"
 ]
 
-async def retrieve_evidence(claim: ClaimExtracted, exclude_domain: str = None) -> list[Evidence]:
+async def retrieve_evidence(claim: ClaimExtracted, exclude_domain: str = None, on_think=None) -> list[Evidence]:
     """Retrieves evidence for a single claim using Tavily, excluding the source domain and social media."""
     print(f"\n🔍 Searching Evidence -> Claim: {claim.claim_text[:50]}...")
     
@@ -27,8 +27,12 @@ async def retrieve_evidence(claim: ClaimExtracted, exclude_domain: str = None) -
     seen_urls = set()
     
     if tavily:
-        for query in queries:
+        for i, query in enumerate(queries):
             try:
+                query_label = "Direct search" if i == 0 else "Fact-check search"
+                if on_think:
+                    await on_think("search", f"{query_label}: querying Tavily", f'"{query[:60]}..."')
+                
                 # Ask for 5 in case some get filtered
                 kwargs = {"query": query, "search_depth": "basic", "max_results": 5}
                 
@@ -42,6 +46,9 @@ async def retrieve_evidence(claim: ClaimExtracted, exclude_domain: str = None) -
                 response = tavily.search(**kwargs)
                 results = response.get("results", [])
                 print(f"   ✅ Tavily found {len(results)} results for: '{query[:50]}...'")
+                
+                if on_think:
+                    await on_think("check-circle", f"Tavily returned {len(results)} results", f"{query_label} complete")
                 
                 for res in results:
                     url = res.get("url", "")
@@ -73,9 +80,16 @@ async def retrieve_evidence(claim: ClaimExtracted, exclude_domain: str = None) -
             except Exception as e:
                 print(f"   ❌ TAVILY SEARCH FAILED for '{query[:50]}...': {e}")
                 logger.error(f"Tavily search failed for query '{query[:100]}...': {e}")
+                if on_think:
+                    await on_think("alert-triangle", f"Search query failed", str(e)[:60])
     else:
         print("   ❌ CRITICAL: Tavily client is missing! Set TAVILY_API_KEY in .env!")
         logger.warning("No Tavily client available.")
+        if on_think:
+            await on_think("alert-triangle", "Tavily client unavailable", "Set TAVILY_API_KEY in .env")
         
     print(f"📊 Total Evidence Gathered for claim {claim.id}: {len(evidence_list)}")
+    if on_think:
+        await on_think("database", f"Gathered {len(evidence_list)} evidence sources", f"From {len(seen_urls)} unique URLs across {len(queries)} queries")
     return evidence_list
+

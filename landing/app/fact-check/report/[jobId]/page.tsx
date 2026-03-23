@@ -12,6 +12,7 @@ import { Button } from "@/components/ui/button";
 import { DownloadCloud, AlertOctagon, Share2, FileDown, Check, ClipboardCopy } from "lucide-react";
 import { Navbar } from "@/components/navbar";
 import { BackgroundElements } from "@/components/background-elements";
+import { ThinkingPanel, ThinkingStep } from "@/components/fact-check/ThinkingPanel";
 
 export default function ReportPage() {
   const { jobId } = useParams();
@@ -22,6 +23,7 @@ export default function ReportPage() {
   const [mediaResults, setMediaResults] = useState<any[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
+  const [thinkingSteps, setThinkingSteps] = useState<ThinkingStep[]>([]);
   const eventSourceRef = useRef<EventSource | null>(null);
 
   useEffect(() => {
@@ -87,6 +89,18 @@ export default function ReportPage() {
         es.addEventListener("stage", (e: any) => {
           const parsed = JSON.parse(e.data);
           setStage(parsed.stage);
+        });
+
+        es.addEventListener("thinking", (e: any) => {
+          const parsed = JSON.parse(e.data);
+          const now = new Date();
+          const timestamp = now.toLocaleTimeString("en-US", { hour12: false, hour: "2-digit", minute: "2-digit", second: "2-digit" });
+          setThinkingSteps((prev) => [...prev, {
+            icon: parsed.icon,
+            label: parsed.label,
+            detail: parsed.detail,
+            timestamp
+          }]);
         });
 
         es.addEventListener("claim_update", (e: any) => {
@@ -367,10 +381,53 @@ export default function ReportPage() {
                     />
                   ))}
                 </AnimatePresence>
-                {claimEntries.length === 0 && stage !== "" && (
-                  <div className="text-center py-12 text-muted-foreground animate-pulse">
-                    Scanning text for verifiable facts...
-                  </div>
+                {claimEntries.length === 0 && stage !== "" && stage !== "complete" && (
+                  <motion.div 
+                    initial={{ opacity: 0, y: 10 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    className="bg-card/40 backdrop-blur-xl border border-purple-500/20 rounded-2xl p-6"
+                  >
+                    <div className="flex items-center gap-3 mb-4">
+                      <div className="relative">
+                        <div className="w-8 h-8 rounded-full bg-purple-500/20 flex items-center justify-center">
+                          <svg className="w-4 h-4 text-purple-400 animate-spin" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                            <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10" strokeLinecap="round"/>
+                          </svg>
+                        </div>
+                      </div>
+                      <div>
+                        <p className="text-sm font-semibold text-foreground/90">Analyzing content...</p>
+                        <p className="text-xs text-muted-foreground">Claims will appear here as they are discovered</p>
+                      </div>
+                    </div>
+                    
+                    {/* Show last 3 thinking steps inline */}
+                    <div className="space-y-2 border-t border-border/30 pt-3">
+                      <AnimatePresence>
+                        {thinkingSteps.slice(-3).map((step, idx) => (
+                          <motion.div
+                            key={`inline-${thinkingSteps.length - 3 + idx}`}
+                            initial={{ opacity: 0, x: -10 }}
+                            animate={{ opacity: 1, x: 0 }}
+                            transition={{ duration: 0.25, delay: idx * 0.05 }}
+                            className="flex items-center gap-2 text-xs"
+                          >
+                            <span className="text-purple-400">›</span>
+                            <span className="text-muted-foreground font-medium truncate">{step.label}</span>
+                            <span className="text-muted-foreground/50 font-mono text-[10px] ml-auto flex-shrink-0">{step.timestamp}</span>
+                          </motion.div>
+                        ))}
+                      </AnimatePresence>
+                      {thinkingSteps.length === 0 && (
+                        <div className="text-xs text-muted-foreground/60 italic">Initializing pipeline...</div>
+                      )}
+                      <div className="flex items-center gap-1.5 pt-1">
+                        <span className="w-1 h-1 rounded-full bg-purple-400 animate-bounce" style={{ animationDelay: "0ms" }} />
+                        <span className="w-1 h-1 rounded-full bg-purple-400 animate-bounce" style={{ animationDelay: "150ms" }} />
+                        <span className="w-1 h-1 rounded-full bg-purple-400 animate-bounce" style={{ animationDelay: "300ms" }} />
+                      </div>
+                    </div>
+                  </motion.div>
                 )}
               </div>
 
@@ -379,6 +436,15 @@ export default function ReportPage() {
 
             <div className="lg:col-span-1">
               <div className="sticky top-32 space-y-6">
+                {/* Thinking Panel — shows AI thought process */}
+                {(thinkingSteps.length > 0 || (stage !== "" && stage !== "complete")) && (
+                  <ThinkingPanel
+                    steps={thinkingSteps}
+                    isComplete={stage === "complete"}
+                    isThinking={stage !== "" && stage !== "complete"}
+                  />
+                )}
+
                 <motion.div 
                   className="bg-card/40 backdrop-blur-xl border border-border rounded-3xl p-8 flex flex-col items-center shadow-xl"
                   initial={{ opacity: 0, x: 20 }}

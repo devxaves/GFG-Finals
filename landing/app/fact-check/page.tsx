@@ -7,12 +7,28 @@ import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Input } from "@/components/ui/input";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { ArrowRight, LinkIcon, FileText, Sparkles } from "lucide-react";
+import { 
+  Search, 
+  Calendar, 
+  ExternalLink, 
+  FileCheck2, 
+  AlertTriangle, 
+  CheckCircle2, 
+  Clock, 
+  Filter,
+  Sparkles,
+  ArrowRight,
+  Loader2,
+  LinkIcon, 
+  FileText
+} from "lucide-react";
 import { Navbar } from "@/components/navbar";
 import { BackgroundElements } from "@/components/background-elements";
+import { useAuth } from "@clerk/nextjs";
 
 export default function FactCheckInputPage() {
   const router = useRouter();
+  const { userId } = useAuth();
   const [inputType, setInputType] = useState<"text" | "url">("text");
   const [content, setContent] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -27,7 +43,7 @@ export default function FactCheckInputPage() {
       const res = await fetch(`${apiUrl}/api/fact-check/start`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ input_type: inputType, content })
+        body: JSON.stringify({ input_type: inputType, content, user_id: userId })
       });
       const data = await res.json();
       if (data.job_id) {

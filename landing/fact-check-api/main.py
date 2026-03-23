@@ -4,6 +4,7 @@ import json
 import asyncio
 import logging
 import httpx
+import hashlib
 from fastapi import FastAPI, Request
 from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -18,6 +19,7 @@ from pipeline.report_builder import build_report
 
 from models.schemas import FactCheckRequest, TextDetectionRequest, MediaAnalysisRequest, ClaimReport, AIDetectionResult, ExtensionTextRequest, ExtensionSentimentRequest, ExtensionSentimentBiasResult
 from utils.gemini_client import configure_gemini, get_gemini_model, generate_structured_content
+from models.database import SessionLocal, FactCheckReport
 
 load_dotenv()
 configure_gemini()
@@ -50,12 +52,58 @@ async def health_check():
 
 @app.post("/api/fact-check/start")
 async def start_fact_check(request: FactCheckRequest):
+    url_hash = None
+    if request.input_type == "url":
+        url_hash = hashlib.md5(request.content.encode('utf-8')).hexdigest()
+        
+        # Check DB for cached report to prevent re-running full pipeline
+        if SessionLocal:
+            db = SessionLocal()
+            try:
+                cached_report = db.query(FactCheckReport).filter(FactCheckReport.url_hash == url_hash).first()
+                if cached_report:
+                    logger.info(f"⚡ Returning cached report for URL: {request.content}")
+                    
+                    # If this user hasn't explicitly saved this to their history, copy it over!
+                    has_user_cache = False
+                    if getattr(request, 'user_id', None):
+                        has_user_cache = db.query(FactCheckReport).filter(
+                            FactCheckReport.url_hash == url_hash,
+                            FactCheckReport.user_id == request.user_id
+                        ).first() is not None
+                        
+                    if getattr(request, 'user_id', None) and not has_user_cache:
+                        new_job_id = f"job_{uuid.uuid4().hex}"
+                        duplicate_report = FactCheckReport(
+                            job_id=new_job_id,
+                            user_id=request.user_id,
+                            source="website",
+                            input_type=cached_report.input_type,
+                            input_content=cached_report.input_content,
+                            url_hash=cached_report.url_hash,
+                            report_json=cached_report.report_json,
+                            claims_json=cached_report.claims_json,
+                            overall_score=cached_report.overall_score,
+                            total_claims=cached_report.total_claims
+                        )
+                        db.add(duplicate_report)
+                        db.commit()
+                        return {"job_id": new_job_id, "cached": True}
+                        
+                    return {"job_id": cached_report.job_id, "cached": True}
+            except Exception as e:
+                logger.error(f"DB Error checking cache in start_fact_check: {e}")
+            finally:
+                db.close()
+
     job_id = f"job_{uuid.uuid4().hex}"
     active_jobs[job_id] = {
         "input_type": request.input_type,
-        "content": request.content
+        "content": request.content,
+        "user_id": getattr(request, 'user_id', None),
+        "url_hash": url_hash
     }
-    return {"job_id": job_id}
+    return {"job_id": job_id, "cached": False}
 
 async def fact_check_generator(job_id: str):
     if job_id not in active_jobs:
@@ -71,6 +119,11 @@ async def fact_check_generator(job_id: str):
     
     async def pipeline_worker():
         try:
+            # Thinking events stream the AI's thought process to the frontend
+            async def think(icon: str, label: str, detail: str = ""):
+                await queue.put(f"event: thinking\ndata: {json.dumps({'icon': icon, 'label': label, 'detail': detail})}\n\n")
+
+            await think("sparkles", "Initializing TruthScope Analysis Engine", "Loading NLP models and search indices...")
             await queue.put(f"event: stage\ndata: {json.dumps({'stage': 'extracting', 'message': 'Parsing input and extracting claims...'})}\n\n")
             text_to_analyze = content
             source_domain = None
@@ -82,37 +135,50 @@ async def fact_check_generator(job_id: str):
                         source_domain = parsed.netloc.replace("www.", "")
                 except Exception:
                     pass
+                await think("globe", f"Scraping article from URL", f"GET {content[:80]}...")
                 try:
                     text_to_analyze = await asyncio.to_thread(scrape_url, content)
                 except Exception as e:
                     await queue.put(f"event: error\ndata: {json.dumps({'message': f'Failed to scrape URL: {e}. Please paste text directly.', 'recoverable': False})}\n\n")
                     return
-                    
+                await think("file-text", f"Article scraped successfully", f"{len(text_to_analyze)} characters extracted")
+            else:
+                await think("file-text", "Processing raw text input", f"{len(text_to_analyze)} characters received")
+
+            await think("brain", "Running NLP claim extraction", "Identifying verifiable factual claims...")
             extraction_result = await asyncio.to_thread(extract_claims, text_to_analyze)
             claims = extraction_result.claims
+            await think("list-checks", f"Extracted {len(claims)} claims from text", f"Claims identified and ready for verification")
             
             await queue.put(f"event: stage\ndata: {json.dumps({'stage': 'gathering_evidence', 'message': f'Found {len(claims)} claims. Gathering evidence...'})}\n\n")
             
             claim_reports = [ClaimReport(claim=c) for c in claims]
             
-            async def get_ev(cr: ClaimReport):
+            async def get_ev(cr: ClaimReport, idx: int):
                 try:
+                    await think("search", f"Searching evidence for Claim #{idx+1}", f'"{cr.claim.claim_text[:60]}..."')
                     await queue.put(f"event: claim_update\ndata: {json.dumps({'claim_id': cr.claim.id, 'status': 'searching'})}\n\n")
-                    evidence = await retrieve_evidence(cr.claim, exclude_domain=source_domain)
+                    evidence = await retrieve_evidence(cr.claim, exclude_domain=source_domain, on_think=think)
                     cr.evidence = evidence
                     await queue.put(f"event: claim_update\ndata: {json.dumps({'claim_id': cr.claim.id, 'status': 'verifying'})}\n\n")
                     return cr.claim.id, evidence
                 except Exception as ex:
                     logger.error(f"Error getting evidence for {cr.claim.id}: {ex}")
+                    await think("alert-triangle", f"Evidence search failed for Claim #{idx+1}", str(ex)[:80])
                     return cr.claim.id, []
                     
             # Fetch all evidence concurrently using Tavily (no LLM, no rate limits)
-            ev_list = await asyncio.gather(*(get_ev(cr) for cr in claim_reports))
+            ev_list = await asyncio.gather(*(get_ev(cr, i) for i, cr in enumerate(claim_reports)))
             all_evidence = dict(ev_list)
+            
+            total_sources = sum(len(v) for v in all_evidence.values())
+            await think("shield-check", f"Cross-referencing {total_sources} sources total", "Preparing batch verification with Gemini AI...")
             
             from models.schemas import VerificationResult
             # Verify all claims in a single LLM request (Batching)
+            await think("cpu", "Verifying claims with Gemini AI", f"Batch processing {len(claims)} claims against evidence...")
             batch_result = await asyncio.to_thread(verify_claims_batch, claims, all_evidence)
+            await think("check-circle", "AI verification complete", "All claims have been analyzed and scored")
             
             # Repopulate and stream the updates
             for cr in claim_reports:
@@ -126,9 +192,11 @@ async def fact_check_generator(job_id: str):
                     )
                 await queue.put(f"event: claim_update\ndata: {json.dumps({'claim_id': cr.claim.id, 'status': 'done', 'result': cr.model_dump(mode='json')})}\n\n")
             
+            await think("bar-chart", "Building accuracy report", "Calculating overall credibility score...")
             final_report = build_report(claim_reports)
+            await think("sparkles", f"Analysis Complete — Score: {final_report.overall_score}%", "Report ready for review")
             
-            # Save completed report for shared links & history
+            # Save completed report for shared links & history (Legacy in-memory fallback)
             from datetime import datetime
             completed_reports[job_id] = {
                 "report": final_report.model_dump(mode='json'),
@@ -136,7 +204,33 @@ async def fact_check_generator(job_id: str):
                 "completed_at": datetime.utcnow().isoformat() + "Z",
                 "input_content": content[:200] if content else ""
             }
-            logger.info(f"Saved completed report for job {job_id}")
+            
+            # DB PERSISTENCE
+            if SessionLocal:
+                db = SessionLocal()
+                try:
+                    db_report = FactCheckReport(
+                        job_id=job_id,
+                        user_id=job_data.get("user_id"),
+                        source="website",
+                        input_type=input_type,
+                        input_content=content[:500] if content else "",
+                        url_hash=job_data.get("url_hash"),
+                        report_json=json.dumps(final_report.model_dump(mode='json')),
+                        claims_json=json.dumps({cr.claim.id: {'status': 'done', 'result': cr.model_dump(mode='json')} for cr in claim_reports}),
+                        overall_score=final_report.overall_score,
+                        total_claims=len(claims)
+                    )
+                    db.add(db_report)
+                    db.commit()
+                    logger.info(f"💾 Saved report {job_id} to DB")
+                except Exception as db_e:
+                    logger.error(f"Failed to save {job_id} to DB: {db_e}")
+                    db.rollback()
+                finally:
+                    db.close()
+            else:
+                logger.info(f"Saved completed report for job {job_id} (Memory Only)")
             
             await queue.put(f"event: complete\ndata: {json.dumps({'report': final_report.model_dump(mode='json')})}\n\n")
             
@@ -159,17 +253,70 @@ async def fact_check_generator(job_id: str):
 async def stream_report(job_id: str):
     return StreamingResponse(fact_check_generator(job_id), media_type="text/event-stream")
 
+from typing import Optional
+
 @app.get("/api/fact-check/report/{job_id}")
 async def get_saved_report(job_id: str):
     """Retrieve a previously completed report by job ID (for shared links)."""
+    if SessionLocal:
+        db = SessionLocal()
+        try:
+            db_report = db.query(FactCheckReport).filter(FactCheckReport.job_id == job_id).first()
+            if db_report:
+                return {
+                    "report": json.loads(db_report.report_json) if db_report.report_json else {},
+                    "claims": json.loads(db_report.claims_json) if db_report.claims_json else {},
+                    "completed_at": db_report.created_at.isoformat() + "Z",
+                    "input_content": db_report.input_content,
+                    "cached": True
+                }
+        except Exception as e:
+            logger.error(f"Error fetching report {job_id} from DB: {e}")
+        finally:
+            db.close()
+            
+    # Fallback to local memory dictionary
     if job_id in completed_reports:
         return completed_reports[job_id]
-    return {"error": "Report not found. It may have expired or the server was restarted."}
+        
+    return {"error": "Report not found in database or memory."}
 
 @app.get("/api/fact-check/history")
-async def get_history():
+async def get_history(user_id: Optional[str] = None):
     """Return a list of all completed reports for the history page."""
     history = []
+    
+    if SessionLocal:
+        db = SessionLocal()
+        try:
+            query = db.query(FactCheckReport)
+            if user_id:
+                query = query.filter(FactCheckReport.user_id == user_id)
+                
+            # Fetch latest 100 reports ordered by date
+            db_reports = query.order_by(FactCheckReport.created_at.desc()).limit(100).all()
+            for r in db_reports:
+                try:
+                    report_data = json.loads(r.report_json) if r.report_json else {}
+                    history.append({
+                        "id": r.job_id,
+                        "title": r.input_content[:100] if r.input_content else "Untitled Analysis",
+                        "overallScore": r.overall_score or 0,
+                        "claimCount": r.total_claims or 0,
+                        "verdictBreakdown": report_data.get("breakdown_by_verdict", {}),
+                        "completedAt": r.created_at.isoformat() + "Z",
+                        "source": r.source
+                    })
+                except Exception as json_e:
+                    logger.warning(f"Failed parsing JSON for job {r.job_id}: {json_e}")
+            
+            return {"history": history}
+        except Exception as e:
+            logger.error(f"Error fetching history from DB: {e}")
+        finally:
+            db.close()
+
+    # Fallback to local memory if DB fails
     for job_id, data in completed_reports.items():
         report = data.get("report", {})
         history.append({
@@ -180,7 +327,6 @@ async def get_history():
             "verdictBreakdown": report.get("breakdown_by_verdict", {}),
             "completedAt": data.get("completed_at", "")
         })
-    # Most recent first
     history.reverse()
     return {"history": history}
 
@@ -256,22 +402,77 @@ async def extension_analyze_text(request: ExtensionTextRequest):
     content = request.article_text
     
     # [1] FAST CACHE RETRIEVAL
+    url_hash = None
     if request.url:
         import hashlib
-        from models.database import SessionLocal, ArticleCache
+        from models.database import SessionLocal, FactCheckReport
         if SessionLocal:
             try:
                 url_hash = hashlib.md5(request.url.encode('utf-8')).hexdigest()
                 db = SessionLocal()
-                # Run database selection in a thread to keep FastAPI completely async
-                cached = await asyncio.to_thread(lambda: db.query(ArticleCache).filter(ArticleCache.url_hash == url_hash).first())
+                # Check unified FactCheckReport table
+                cached = await asyncio.to_thread(lambda: db.query(FactCheckReport).filter(FactCheckReport.url_hash == url_hash).first())
                 if cached:
+                    logger.info(f"⚡ EXTENSION CACHE HIT! Served from FactCheckReport: {request.url}")
+                    
+                    # Store a duplicate for this extension user's history!
+                    try:
+                        has_user_cache = False
+                        if getattr(request, 'user_id', None):
+                            has_user_cache = db.query(FactCheckReport).filter(
+                                FactCheckReport.url_hash == url_hash,
+                                FactCheckReport.user_id == request.user_id
+                            ).first() is not None
+                            
+                        if getattr(request, 'user_id', None) and not has_user_cache:
+                            new_ext_job_id = f"ext_{uuid.uuid4().hex}"
+                            duplicate_report = FactCheckReport(
+                                job_id=new_ext_job_id,
+                                user_id=request.user_id,
+                                source="extension",
+                                input_type=cached.input_type,
+                                input_content=cached.input_content,
+                                url_hash=cached.url_hash,
+                                report_json=cached.report_json,
+                                claims_json=cached.claims_json,
+                                overall_score=cached.overall_score,
+                                total_claims=cached.total_claims
+                            )
+                            db.add(duplicate_report)
+                            db.commit()
+                            logger.info(f"💾 Added cache hit to extension user's history")
+                    except Exception as e:
+                        logger.error(f"Failed to duplicate cache for user: {e}")
+                    
                     db.close()
-                    logger.info(f"CACHE HIT! Serving instant response for {request.url}")
-                    return json.loads(cached.result_json)
-                db.close()
+                    
+                    # Reconstruct extension response format from unified db schema
+                    try:
+                        report_data = json.loads(cached.report_json)
+                        claims_data = json.loads(cached.claims_json) if cached.claims_json else {}
+                        
+                        # Just wrap it to pass the extension UI requirements
+                        return {
+                            "textResult": {
+                                "overall_score": report_data.get("overall_score", 0),
+                                "total_claims": report_data.get("total_claims", 0),
+                                "breakdown_by_verdict": report_data.get("breakdown_by_verdict", {}),
+                                "label_0": "LABEL_0", # legacy compat 
+                                "confidence": 1.0, # legacy compat
+                            },
+                            "fact_checks": [v.get('result', {}) for v in claims_data.values()],
+                            "job_id": cached.job_id
+                        }
+                    except Exception as json_e:
+                        logger.error(f"Failed parsing unified cache for extension: {json_e}")
+                else:
+                    db.close()
             except Exception as e:
-                logger.error(f"Cache lookup failed: {e}")
+                logger.error(f"Unified extension cache lookup failed: {e}")
+                try:
+                    db.close()
+                except:
+                    pass
     
     
     # Refine/truncate large raw HTML/text locally to prevent LLM token limits
@@ -408,26 +609,34 @@ async def extension_analyze_text(request: ExtensionTextRequest):
         # [2] SAVE RESPONSE TO CACHE
         if request.url:
             import hashlib
-            from models.database import SessionLocal, ArticleCache
+            from models.database import SessionLocal, FactCheckReport
             if SessionLocal:
                 try:
                     url_hash = hashlib.md5(request.url.encode('utf-8')).hexdigest()
                     db = SessionLocal()
                     
                     def perform_db_save():
-                        existing = db.query(ArticleCache).filter(ArticleCache.url_hash == url_hash).first()
+                        existing = db.query(FactCheckReport).filter(FactCheckReport.url_hash == url_hash).first()
                         if not existing:
-                            new_cache = ArticleCache(
+                            # We format this exactly like the website report schema to keep things unified
+                            new_cache = FactCheckReport(
+                                job_id=ext_job_id,
+                                user_id=request.user_id,
+                                source="extension",
+                                input_type="url",
+                                input_content=request.url,
                                 url_hash=url_hash,
-                                url=request.url,
-                                result_json=json.dumps(response_data)
+                                report_json=json.dumps(final_report.model_dump(mode='json')),
+                                claims_json=json.dumps({cr.claim.id: {'status': 'done', 'result': cr.model_dump(mode='json')} for cr in claim_reports}),
+                                overall_score=final_report.overall_score,
+                                total_claims=len(claims)
                             )
                             db.add(new_cache)
                             db.commit()
                             
                     await asyncio.to_thread(perform_db_save)
                     db.close()
-                    logger.info(f"CACHE MISS - Successfully analyzed and cached {request.url}")
+                    logger.info(f"💾 Saved extension analysis to DB FactCheckReport: {request.url}")
                 except Exception as e:
                     logger.error(f"Failed to save to database cache: {e}")
                     

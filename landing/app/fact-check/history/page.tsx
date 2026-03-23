@@ -21,6 +21,7 @@ import {
   Loader2
 } from "lucide-react";
 import Link from "next/link";
+import { useAuth } from "@clerk/nextjs";
 
 interface HistoryItem {
   id: string;
@@ -60,16 +61,23 @@ function formatDate(dateString: string) {
 }
 
 export default function HistoryPage() {
+  const { userId, isLoaded } = useAuth();
   const [searchQuery, setSearchQuery] = useState("");
   const [activeFilter, setActiveFilter] = useState<FilterType>("all");
   const [history, setHistory] = useState<HistoryItem[]>([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
+    if (!isLoaded) return; // Wait for clerk
+    
     async function fetchHistory() {
       try {
         const apiUrl = process.env.NEXT_PUBLIC_FACT_CHECK_API_URL || "http://localhost:8000";
-        const res = await fetch(`${apiUrl}/api/fact-check/history`);
+        const endpoint = userId 
+          ? `${apiUrl}/api/fact-check/history?user_id=${userId}`
+          : `${apiUrl}/api/fact-check/history`;
+          
+        const res = await fetch(endpoint);
         const data = await res.json();
         if (data.history) {
           setHistory(data.history);
@@ -81,7 +89,7 @@ export default function HistoryPage() {
       }
     }
     fetchHistory();
-  }, []);
+  }, [userId, isLoaded]);
 
   const filters: { id: FilterType; label: string; icon: any }[] = [
     { id: "all", label: "All", icon: Filter },

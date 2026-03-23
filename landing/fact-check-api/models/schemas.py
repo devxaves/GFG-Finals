@@ -5,12 +5,14 @@ from typing import List, Optional
 class FactCheckRequest(BaseModel):
     input_type: str = Field(..., description="'text' or 'url'")
     content: str
+    user_id: Optional[str] = None
 
 class TextDetectionRequest(BaseModel):
     text: str
 
 class MediaAnalysisRequest(BaseModel):
     media_url: str
+    user_id: Optional[str] = None
 
 # Stage 1: Extraction
 class ClaimExtracted(BaseModel):
@@ -73,6 +75,7 @@ class AIDetectionResult(BaseModel):
 class ExtensionTextRequest(BaseModel):
     url: Optional[str] = None
     article_text: str
+    user_id: Optional[str] = None
 
 class ExtensionSentimentRequest(BaseModel):
     text: str
