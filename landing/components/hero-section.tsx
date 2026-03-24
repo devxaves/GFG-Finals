@@ -133,7 +133,7 @@ export function HeroSection() {
               </div>
               <div className="relative">
                 <Image
-                  src="./facts.png"
+                  src="/facts.png"
                   alt="TruthScope Extension"
                   width={400}
                   height={300}
