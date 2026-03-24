@@ -110,7 +110,7 @@ export function HeroSection() {
                 ))}
               </div>
               <div>
-                <span className="font-medium">10+</span> users trust TruthScope
+                <span className="font-medium">10k+</span> users trust TruthScope
               </div>
             </div>
           </div>
@@ -133,7 +133,7 @@ export function HeroSection() {
               </div>
               <div className="relative">
                 <Image
-                  src="/placeholder.svg?height=300&width=400&text=TruthScope+Extension+Demo"
+                  src="./facts.png"
                   alt="TruthScope Extension"
                   width={400}
                   height={300}
