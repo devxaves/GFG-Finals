@@ -1,5 +1,6 @@
 import { clerkMiddleware, createRouteMatcher } from "@clerk/nextjs/server";
 
+
 // These routes are publicly accessible without authentication
 // This allows shared report links to work for anyone
 const isPublicRoute = createRouteMatcher([
