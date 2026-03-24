@@ -199,6 +199,69 @@ document.addEventListener('DOMContentLoaded', function() {
         });
     }
 
+    // --- Analyzing Overlay ---
+    const analyzingOverlay = document.getElementById('analyzingOverlay');
+    const analyzingProgress = document.getElementById('analyzingProgress');
+    const analyzingStatusText = document.getElementById('analyzingStatusText');
+
+    const PIPELINE_STEPS = [
+        { id: 'step-scraping',  label: 'Scraping article content...',      progress: 20 },
+        { id: 'step-claims',   label: 'Extracting verifiable claims...',   progress: 40 },
+        { id: 'step-evidence', label: 'Searching for evidence sources...', progress: 60 },
+        { id: 'step-verify',   label: 'Verifying claims with AI...',       progress: 80 },
+        { id: 'step-report',   label: 'Building credibility report...',    progress: 95 },
+    ];
+
+    let stepTimer = null;
+
+    function showAnalyzingOverlay() {
+        if (!analyzingOverlay) return;
+        // Reset steps
+        PIPELINE_STEPS.forEach(s => {
+            const el = document.getElementById(s.id);
+            if (el) { el.className = 'ts-step'; el.querySelector('.ts-step-dot').style.cssText = ''; }
+        });
+        analyzingProgress.style.width = '8%';
+        analyzingStatusText.textContent = 'Initializing pipeline...';
+        analyzingOverlay.classList.add('visible');
+
+        // Auto-cycle steps to show progress animation every ~3.5s
+        let currentStep = 0;
+        updateAnalyzingStep(currentStep);
+        stepTimer = setInterval(() => {
+            currentStep++;
+            if (currentStep < PIPELINE_STEPS.length) {
+                updateAnalyzingStep(currentStep);
+            } else {
+                clearInterval(stepTimer);
+            }
+        }, 3500);
+    }
+
+    function updateAnalyzingStep(stepIndex) {
+        PIPELINE_STEPS.forEach((s, i) => {
+            const el = document.getElementById(s.id);
+            if (!el) return;
+            if (i < stepIndex) { el.className = 'ts-step done'; el.querySelector('.ts-step-dot').textContent = '✓'; }
+            else if (i === stepIndex) { el.className = 'ts-step active'; }
+            else { el.className = 'ts-step'; }
+        });
+        if (analyzingStatusText) analyzingStatusText.textContent = PIPELINE_STEPS[stepIndex].label;
+        if (analyzingProgress) analyzingProgress.style.width = PIPELINE_STEPS[stepIndex].progress + '%';
+    }
+
+    function hideAnalyzingOverlay() {
+        clearInterval(stepTimer);
+        if (!analyzingOverlay) return;
+        analyzingOverlay.style.opacity = '0';
+        analyzingOverlay.style.transition = 'opacity 0.4s ease';
+        setTimeout(() => {
+            analyzingOverlay.classList.remove('visible');
+            analyzingOverlay.style.opacity = '';
+            analyzingOverlay.style.transition = '';
+        }, 400);
+    }
+
     // --- Data Display ---
     function createLoadingPlaceholderHTML(text) {
         return `
@@ -446,13 +509,12 @@ document.addEventListener('DOMContentLoaded', function() {
             if (currentTab && currentTab.id) {
                 console.log(`Sidepanel: Requesting results for tab ${currentTab.id} from background.`);
                 // Set UI to loading state
-                statusBadge.textContent = "Loading...";
+                statusBadge.textContent = "Analyzing...";
                 statusBadge.className = "status-badge loading";
-                confidenceDiv.textContent = "Fetching analysis results...";
+                confidenceDiv.textContent = "TruthScope is analyzing this page...";
                 
-                aiSummaryContainer.innerHTML = createLoadingPlaceholderHTML('Generating AI reasoning...');
-                factCheckResultsContainer.innerHTML = createLoadingPlaceholderHTML('Loading fact check results...');
-                newsResultsContainer.innerHTML = createLoadingPlaceholderHTML('Searching for related news...');
+                // Show premium analyzing overlay
+                showAnalyzingOverlay();
 
                 // Request data from background script (NO TOKEN NEEDED HERE)
                 chrome.runtime.sendMessage(
@@ -470,8 +532,10 @@ document.addEventListener('DOMContentLoaded', function() {
                         console.log("Sidepanel: Received response from getResultForTab:", response);
 
                         if (response && response.status === "found") {
+                            hideAnalyzingOverlay();
                             displayResults(response.data);
                         } else if (response && response.status === "not_found") {
+                            hideAnalyzingOverlay();
                             displayNotAvailableState();
                         } else if (response && response.status === "auth_error") {
                             console.error("Sidepanel: Auth error reported by background.");
