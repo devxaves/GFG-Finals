@@ -3,7 +3,7 @@
 import { useState, useEffect } from "react"
 import Link from "next/link"
 import { Button } from "@/components/ui/button"
-import { Shield, Menu, X, ArrowRight } from "lucide-react"
+import { Shield, Menu, X, ArrowRight, Film } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { SignInButton, SignedIn, SignedOut, UserButton } from "@clerk/nextjs"
 
@@ -70,6 +70,14 @@ export function Navbar() {
           >
             Fact Checker
             <span className="absolute -bottom-1 left-0 h-0.5 bg-gradient-to-r from-blue-400 to-purple-600 transition-all duration-300 w-full" />
+          </Link>
+          <Link
+            href="/media-check"
+            className="text-sm font-bold text-rose-400 hover:text-rose-300 transition-all duration-300 relative group cursor-pointer flex items-center gap-1"
+          >
+            <Film className="h-3.5 w-3.5" />
+            Media Check
+            <span className="absolute -bottom-1 left-0 h-0.5 bg-gradient-to-r from-rose-500 to-orange-400 transition-all duration-300 w-0 group-hover:w-full" />
           </Link>
           <Link
             href="/fact-check/history"
@@ -150,6 +158,13 @@ export function Navbar() {
               className="text-sm font-bold text-blue-400 bg-blue-500/10 px-2 py-1.5 rounded-md"
             >
               Fact Checker
+            </Link>
+            <Link
+              href="/media-check"
+              onClick={() => setIsMenuOpen(false)}
+              className="text-sm font-bold text-rose-400 bg-rose-500/10 px-2 py-1.5 rounded-md flex items-center gap-1.5"
+            >
+              <Film className="h-3.5 w-3.5" /> Media Check
             </Link>
             <Link
               href="/leaderboard"

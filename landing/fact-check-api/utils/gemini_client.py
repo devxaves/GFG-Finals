@@ -17,12 +17,12 @@ def configure_gemini():
     else:
         logger.warning("GEMINI_API_KEY is not set or is using placeholder. Gemini calls will fail.")
 
-def get_gemini_model(model_name: str = "gemini-3.1-flash-lite-preview", system_instruction: str = None):
+def get_gemini_model(model_name: str = "gemini-2.5-flash", system_instruction: str = None):
     generation_config = {
         "temperature": 0.1,
         "top_p": 0.95,
-        "top_k": 64,
-        "max_output_tokens": 8192,
+        "top_k": 32,
+        "max_output_tokens": 2048,  # Reduced for speed - claim extraction doesn't need 8k tokens
     }
     
     try:
@@ -80,5 +80,43 @@ def generate_structured_content(model, prompt: str, response_schema: Type[BaseMo
             content = resp.json()["choices"][0]["message"]["content"]
             return response_schema.model_validate_json(content)
         except Exception as groq_e:
-            logger.error(f"Groq fallback failed: {groq_e}")
-            raise ValueError(f"Both Gemini and Groq API calls failed. Gemini: {str(e)} | Groq: {str(groq_e)}")
+            logger.error(f"Groq fallback failed: {groq_e}. Attempting Nvidia fallback...")
+            
+            nvidia_key = os.getenv("NVIDIA_API_KEY", "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")
+            invoke_url = "https://integrate.api.nvidia.com/v1/chat/completions"
+            headers = {
+                "Authorization": f"Bearer {nvidia_key}",
+                "Accept": "application/json"
+            }
+            payload = {
+                "model": "qwen/qwen3.5-122b-a10b",
+                "messages": [
+                    {"role": "system", "content": full_sys},
+                    {"role": "user", "content": prompt}
+                ],
+                "max_tokens": 16384,
+                "temperature": 0.1,
+                "top_p": 0.95,
+                "stream": False,
+                "chat_template_kwargs": {"enable_thinking": True}
+            }
+            try:
+                resp = requests.post(invoke_url, headers=headers, json=payload, timeout=60.0)
+                if not resp.ok:
+                    raise ValueError(f"Status {resp.status_code}: {resp.text}")
+                content = resp.json()["choices"][0]["message"]["content"]
+                
+                # Cleanup potential thinking blocks and markdown tags for strict JSON validation
+                if "<think>" in content and "</think>" in content:
+                    content = content.split("</think>")[-1]
+                content = content.strip()
+                if content.startswith("```json"):
+                    content = content[7:]
+                if content.endswith("```"):
+                    content = content[:-3]
+                content = content.strip()
+                
+                return response_schema.model_validate_json(content)
+            except Exception as nvidia_e:
+                logger.error(f"Nvidia fallback failed: {nvidia_e}")
+                raise ValueError(f"All API calls failed. Gemini: {str(e)} | Groq: {str(groq_e)} | Nvidia: {str(nvidia_e)}")

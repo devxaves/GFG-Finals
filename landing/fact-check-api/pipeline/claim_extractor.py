@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import uuid
 from models.schemas import ExtractionResult
@@ -14,6 +15,7 @@ Rules:
 - Each claim must be a single, standalone fact.
 - Do not paraphrase — preserve key names, numbers, dates.
 - 'context_snippet' MUST be an EXACT, verbatim, unbroken substring from the provided text that contains the claim, so it can be physically matched on the frontend.
+- IMPORTANT: You MUST detect the language of the provided text and output ALL claims and JSON string values in that EXACT SAME language. Do not translate the text into English if it is in another language.
 - Output ONLY valid JSON matching the provided schema."""
 
 def extract_claims(text: str) -> ExtractionResult:
@@ -38,3 +40,24 @@ def extract_claims(text: str) -> ExtractionResult:
     except Exception as e:
         logger.error(f"Failed to extract claims: {e}")
         raise
+
+
+async def extract_from_text(text: str) -> list:
+    """
+    Async wrapper: extract verifiable claims directly from raw text.
+    Reuses the same Gemini-powered extract_claims(), skipping URL scraping.
+    Returns a plain list of claim dicts for the /analyze/text endpoint.
+    """
+    try:
+        result = await asyncio.to_thread(extract_claims, text)
+        return [
+            {
+                "id": c.id,
+                "claim_text": c.claim_text,
+                "context_snippet": getattr(c, "context_snippet", "")
+            }
+            for c in result.claims
+        ]
+    except Exception as e:
+        logger.error(f"extract_from_text failed: {e}")
+        return []

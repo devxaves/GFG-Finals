@@ -362,9 +362,10 @@ Unnaturally uniform sentence length
 Absence of stylistic quirks or errors
 Overuse of transitional phrases
 Generic, non-specific language
-Lack of personal voice or anecdote
+Lack of personal voice or anecdotes
 
 Provide a probability score (0-100) that this text was AI-generated, with specific indicators found.
+IMPORTANT: You MUST detect the language of the provided text and write the `indicators` in that EXACT SAME language.
 Output ONLY valid JSON matching the schema.""")
     if not model:
         return AIDetectionResult(ai_generated_probability=0, indicators=["Gemini model unavailable."])
@@ -475,16 +476,65 @@ async def extension_analyze_text(request: ExtensionTextRequest):
                         report_data = json.loads(cached.report_json)
                         claims_data = json.loads(cached.claims_json) if cached.claims_json else {}
                         
-                        # Just wrap it to pass the extension UI requirements
+                        overall_score = report_data.get("overall_score", 0)
+                        is_fake = overall_score < 70
+                        label = "LABEL_1" if is_fake else "LABEL_0"
+                        confidence_metric = (100 - overall_score) / 100.0 if is_fake else overall_score / 100.0
+                        
+                        # Rebuild highlights, reasoning, and related news from claims
+                        highlights = []
+                        reasoning_list = []
+                        fact_checks = []
+                        related_news = []
+                        seen_urls = set()
+                        
+                        for claim_id, data in claims_data.items():
+                            cr_result = data.get("result", {})
+                            claim_obj = cr_result.get("claim", {})
+                            verification = cr_result.get("verification", {})
+                            evidence_list = cr_result.get("evidence", [])
+                            
+                            if evidence_list:
+                                for ev in evidence_list:
+                                    url = ev.get("source_url")
+                                    if url and url not in seen_urls:
+                                        seen_urls.add(url)
+                                        related_news.append({
+                                            "title": ev.get("title") or f"{ev.get('domain')} Article",
+                                            "source": ev.get("domain"),
+                                            "url": url
+                                        })
+                                        
+                            if verification:
+                                verdict = verification.get("verdict")
+                                if verdict in ["FALSE", "PARTIALLY_TRUE", "CONFLICTING"]:
+                                    if claim_obj.get("context_snippet"):
+                                        highlights.append(claim_obj.get("context_snippet"))
+                                    reasoning_list.append(f"Regarding '{claim_obj.get('claim_text')}': {verification.get('reasoning')}")
+                                elif verdict == "TRUE" and not is_fake:
+                                    reasoning_list.append(f"Verified: {claim_obj.get('claim_text')}")
+                                
+                                for cit in verification.get("citations", []):
+                                    fact_checks.append({
+                                        "source": cit.get("domain"),
+                                        "url": cit.get("url"),
+                                        "headline": cit.get("supporting_snippet", "")[:60] + "...",
+                                        "verdict": verdict
+                                    })
+                        
+                        # Wrap it in the exact structure expected by the extension
                         return {
                             "textResult": {
-                                "overall_score": report_data.get("overall_score", 0),
+                                "label": label,
+                                "score": confidence_metric,
+                                "overall_score": overall_score,
                                 "total_claims": report_data.get("total_claims", 0),
                                 "breakdown_by_verdict": report_data.get("breakdown_by_verdict", {}),
-                                "label_0": "LABEL_0", # legacy compat 
-                                "confidence": 1.0, # legacy compat
+                                "reasoning": reasoning_list,
+                                "highlights": highlights,
+                                "fact_check": fact_checks,
+                                "related_news": related_news
                             },
-                            "fact_checks": [v.get('result', {}) for v in claims_data.values()],
                             "job_id": cached.job_id
                         }
                     except Exception as json_e:
@@ -498,7 +548,14 @@ async def extension_analyze_text(request: ExtensionTextRequest):
                 except:
                     pass
     
-    
+    if not content and request.url:
+        try:
+            from utils.web_scraper import scrape_url
+            content = await asyncio.to_thread(scrape_url, request.url)
+        except Exception as e:
+            logger.error(f"Failed to scrape URL for extension: {e}")
+            content = ""
+            
     # Refine/truncate large raw HTML/text locally to prevent LLM token limits
     if content and len(content) > 10000:
         content = content[:10000] + "\n...[truncated for analysis]"
@@ -673,6 +730,7 @@ async def extension_analyze_text(request: ExtensionTextRequest):
 async def extension_analyze_sentiment(request: ExtensionSentimentRequest):
     model = get_gemini_model(system_instruction="""You are a Sentiment and Bias classifier.
 Analyze the following text for its primary sentiment (positive, negative, or neutral) and potential bias.
+IMPORTANT: You MUST detect the language of the provided text and write the `summary` and `indicators` in that EXACT SAME language.
 Return ONLY valid JSON matching the exact schema provided. Provide a summary of the bias and a list of specific indicators (e.g., 'loaded language', 'one-sided reporting').""")
     if not model:
         return ExtensionSentimentBiasResult(
@@ -695,6 +753,240 @@ Return ONLY valid JSON matching the exact schema provided. Provide a summary of 
             sentiment={"label": "neutral", "score": 0.0},
             bias={"summary": f"Analysis failed: {str(e)}", "indicators": []}
         )
+
+# ==========================================
+# VIDEO DEEPFAKE DETECTION ENDPOINT
+# ==========================================
+
+from fastapi import UploadFile, File, Form
+from pipeline.video_analyzer import VideoAnalyzer
+
+_video_analyzer = VideoAnalyzer()
+
+@app.post("/analyze/video")
+async def analyze_video_endpoint(
+    video: UploadFile = File(...),
+    user_id: str = Form(default="anonymous")
+):
+    """
+    Accepts video file upload, runs Hive deepfake analysis.
+    Stores result in FactCheckReport table. Returns forensics report.
+    """
+    allowed_types = ["video/mp4", "video/webm", "video/quicktime", "video/avi", "video/x-msvideo"]
+    if video.content_type not in allowed_types:
+        from fastapi import HTTPException
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported video format. Allowed: mp4, webm, mov, avi"
+        )
+
+    video_bytes = await video.read()
+    if len(video_bytes) > 50 * 1024 * 1024:
+        from fastapi import HTTPException
+        raise HTTPException(
+            status_code=413,
+            detail="Video too large. Maximum size is 50MB."
+        )
+
+    report = await _video_analyzer.analyze_video(video_bytes, video.filename or "upload.mp4")
+
+    if SessionLocal:
+        db = SessionLocal()
+        try:
+            db_record = FactCheckReport(
+                job_id=report["job_id"],
+                user_id=user_id,
+                source="website_video",
+                input_type="video",
+                input_content=video.filename or "upload.mp4",
+                url_hash=hashlib.md5((video.filename or "upload.mp4").encode()).hexdigest(),
+                report_json=json.dumps(report),
+                claims_json=json.dumps([]),
+                overall_score=int(100 - report.get("avg_ai_probability", 0)),
+                total_claims=0
+            )
+            db.add(db_record)
+            db.commit()
+            logger.info(f"Saved video analysis {report['job_id']} to DB")
+        except Exception as db_e:
+            logger.error(f"Failed to save video report to DB: {db_e}")
+            db.rollback()
+        finally:
+            db.close()
+
+    return report
+
+
+@app.get("/analyze/video/{job_id}")
+async def get_video_report(job_id: str):
+    """Fetch a previously analyzed video report by job_id."""
+    if SessionLocal:
+        db = SessionLocal()
+        try:
+            record = db.query(FactCheckReport).filter(
+                FactCheckReport.job_id == job_id
+            ).first()
+            if record:
+                return json.loads(record.report_json)
+        except Exception as e:
+            logger.error(f"Error fetching video report {job_id}: {e}")
+        finally:
+            db.close()
+
+    from fastapi import HTTPException
+    raise HTTPException(status_code=404, detail="Video report not found")
+
+
+# ==========================================
+# TEXT ANALYSIS ENDPOINT (for Extension OCR)
+# ==========================================
+
+from pydantic import BaseModel as _BaseModel
+
+class TextAnalysisRequest(_BaseModel):
+    text: str
+    source_url: str = "direct_text"
+    user_id: str = "anonymous"
+    source: str = "extension"
+
+
+@app.post("/analyze/text")
+async def analyze_text_endpoint(request: TextAnalysisRequest):
+    """
+    Accepts raw text (from OCR or selection), runs the full claim extraction
+    → evidence search → verification pipeline. Returns structured fact-check report.
+    Used by the Chrome extension OCR and selection fact-check flows.
+    """
+    from pipeline.claim_extractor import extract_from_text as _extract_from_text
+
+    text = request.text.strip()
+    if not text or len(text) < 20:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=400, detail="Text is too short to fact-check (minimum 20 characters).")
+
+    # Truncate to prevent LLM token limits
+    if len(text) > 10000:
+        text = text[:10000] + "\n...[truncated for analysis]"
+
+    text_hash = hashlib.md5(text.lower().encode()).hexdigest()
+
+    # Check cache
+    if SessionLocal:
+        db = SessionLocal()
+        try:
+            cached = db.query(FactCheckReport).filter(
+                FactCheckReport.url_hash == text_hash
+            ).first()
+            if cached:
+                cached_report = json.loads(cached.report_json)
+                # Clone for this user's history
+                if request.user_id and request.user_id != "anonymous":
+                    has_user = db.query(FactCheckReport).filter(
+                        FactCheckReport.url_hash == text_hash,
+                        FactCheckReport.user_id == request.user_id
+                    ).first()
+                    if not has_user:
+                        clone = FactCheckReport(
+                            job_id=f"job_{uuid.uuid4().hex}",
+                            user_id=request.user_id,
+                            source=request.source,
+                            input_type="text",
+                            input_content=request.text[:500],
+                            url_hash=text_hash,
+                            report_json=cached.report_json,
+                            claims_json=cached.claims_json,
+                            overall_score=cached.overall_score,
+                            total_claims=cached.total_claims
+                        )
+                        db.add(clone)
+                        db.commit()
+                cached_report["cached"] = True
+                db.close()
+                return cached_report
+        except Exception as e:
+            logger.error(f"Cache lookup failed for /analyze/text: {e}")
+        finally:
+            try:
+                db.close()
+            except Exception:
+                pass
+
+    # Run full pipeline
+    try:
+        extraction_result = await asyncio.to_thread(
+            __import__('pipeline.claim_extractor', fromlist=['extract_claims']).extract_claims, text
+        )
+        claims = extraction_result.claims
+        claim_reports = [ClaimReport(claim=c) for c in claims]
+
+        async def get_ev(cr: ClaimReport):
+            try:
+                evidence = await retrieve_evidence(cr.claim, exclude_domain=None)
+                cr.evidence = evidence
+                return cr.claim.id, evidence
+            except Exception:
+                return cr.claim.id, []
+
+        ev_list = await asyncio.gather(*(get_ev(cr) for cr in claim_reports))
+        all_evidence = dict(ev_list)
+
+        batch_result = await asyncio.to_thread(verify_claims_batch, claims, all_evidence)
+
+        for cr in claim_reports:
+            res = batch_result.get(cr.claim.id)
+            if res:
+                from models.schemas import VerificationResult
+                cr.verification = VerificationResult(
+                    verdict=res.verdict,
+                    confidence_score=res.confidence_score,
+                    reasoning=res.reasoning,
+                    citations=res.citations
+                )
+
+        final_report = build_report(claim_reports)
+        job_id = f"job_{uuid.uuid4().hex}"
+
+        report_dict = final_report.model_dump(mode="json")
+        report_dict["job_id"] = job_id
+        report_dict["analysis_type"] = "text_factcheck"
+        report_dict["source_url"] = request.source_url
+        report_dict["cached"] = False
+
+        # Persist to DB
+        if SessionLocal:
+            db = SessionLocal()
+            try:
+                db_record = FactCheckReport(
+                    job_id=job_id,
+                    user_id=request.user_id,
+                    source=request.source,
+                    input_type="text",
+                    input_content=request.text[:500],
+                    url_hash=text_hash,
+                    report_json=json.dumps(report_dict),
+                    claims_json=json.dumps({
+                        cr.claim.id: {"status": "done", "result": cr.model_dump(mode="json")}
+                        for cr in claim_reports
+                    }),
+                    overall_score=final_report.overall_score,
+                    total_claims=len(claims)
+                )
+                db.add(db_record)
+                db.commit()
+                logger.info(f"Saved /analyze/text result as {job_id}")
+            except Exception as db_e:
+                logger.error(f"Failed to save /analyze/text to DB: {db_e}")
+                db.rollback()
+            finally:
+                db.close()
+
+        return report_dict
+
+    except Exception as e:
+        logger.error(f"/analyze/text pipeline failed: {e}", exc_info=True)
+        from fastapi import HTTPException
+        raise HTTPException(status_code=500, detail=f"Analysis failed: {str(e)}")
+
 
 # ==========================================
 # LEADERBOARD & VOTING ENDPOINTS

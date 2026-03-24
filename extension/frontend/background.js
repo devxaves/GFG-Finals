@@ -513,4 +513,302 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
 checkInitialAuthState().catch(e => console.error("Error during initial auth state check:", e));
 
+// ══════════════════════════════════════════════════════════════
+// FEATURE 2: CONTEXT MENU — OCR + FACT CHECK
+// ══════════════════════════════════════════════════════════════
+
+const GOOGLE_VISION_API_KEY = "AIzaSyAupVgQ7KF0Xs0dyEQuqVQHhfK3lvunoSc";
+const VISION_API_URL = `https://vision.googleapis.com/v1/images:annotate?key=${GOOGLE_VISION_API_KEY}`;
+const OCR_FACTCHECK_API = "http://127.0.0.1:8000/analyze/text";
+const PAGE_FACTCHECK_API = "http://127.0.0.1:8000/api/fact-check/start";
+
+// ── Create context menus on install ─────────────────────────────
+chrome.runtime.onInstalled.addListener(() => {
+  chrome.contextMenus.create({
+    id: "truthscope-ocr-image",
+    title: "🔍 TruthScope: Read & Fact-Check Image Text",
+    contexts: ["image"]
+  });
+  chrome.contextMenus.create({
+    id: "truthscope-check-selection",
+    title: "🛡️ TruthScope: Fact-Check Selected Text",
+    contexts: ["selection"]
+  });
+  chrome.contextMenus.create({
+    id: "truthscope-check-page",
+    title: "📄 TruthScope: Analyze This Page",
+    contexts: ["page"]
+  });
+});
+
+// ── Handle context menu clicks ───────────────────────────────────
+chrome.contextMenus.onClicked.addListener(async (info, tab) => {
+  if (info.menuItemId === "truthscope-ocr-image") {
+    const imageUrl = info.srcUrl;
+    if (!imageUrl) return;
+    await chrome.storage.local.set({
+      currentTask: {
+        type: "ocr_factcheck",
+        status: "extracting_text",
+        imageUrl,
+        timestamp: Date.now()
+      }
+    });
+    await runOCRFactCheck(imageUrl, tab.id);
+  }
+
+  if (info.menuItemId === "truthscope-check-selection") {
+    const text = info.selectionText;
+    if (!text || text.trim().length < 10) return;
+    await chrome.storage.local.set({
+      currentTask: {
+        type: "text_factcheck",
+        status: "analyzing",
+        inputText: text,
+        timestamp: Date.now()
+      }
+    });
+    await runTextFactCheck(text.trim(), null);
+  }
+
+  if (info.menuItemId === "truthscope-check-page") {
+    const url = tab.url;
+    await chrome.storage.local.set({
+      currentTask: {
+        type: "page_factcheck",
+        status: "analyzing",
+        pageUrl: url,
+        timestamp: Date.now()
+      }
+    });
+    await runPageFactCheck(url);
+  }
+});
+
+// ── OCR → Fact Check Pipeline ────────────────────────────────────
+async function runOCRFactCheck(imageUrl, tabId) {
+  try {
+    await updateOCRTaskStatus("extracting_text", "Reading text from image...");
+
+    let base64Image = null;
+
+    // Try direct fetch first
+    try {
+      const response = await fetch(imageUrl);
+      const blob = await response.blob();
+      const dataUrl = await blobToBase64(blob);
+      base64Image = dataUrl.split(",")[1];
+    } catch (_fetchErr) {
+      // CORS blocked — inject canvas helper into the page
+      try {
+        const results = await chrome.scripting.executeScript({
+          target: { tabId },
+          func: fetchImageAsBase64ViaCanvas,
+          args: [imageUrl]
+        });
+        base64Image = results?.[0]?.result ?? null;
+      } catch (_injErr) {
+        // scripting injection failed
+      }
+    }
+
+    if (!base64Image) {
+      await chrome.storage.local.set({
+        currentTask: {
+          type: "ocr_factcheck",
+          status: "error",
+          error: "Could not access the image (CORS restriction). Try saving the image locally first.",
+          timestamp: Date.now()
+        }
+      });
+      return;
+    }
+
+    await updateOCRTaskStatus("extracting_text", "Extracting text with Google Vision OCR...");
+
+    const visionPayload = {
+      requests: [{
+        image: { content: base64Image },
+        features: [
+          { type: "TEXT_DETECTION", maxResults: 1 },
+          { type: "DOCUMENT_TEXT_DETECTION", maxResults: 1 }
+        ]
+      }]
+    };
+
+    const visionRes = await fetch(VISION_API_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(visionPayload)
+    });
+
+    const visionData = await visionRes.json();
+    const fullText =
+      visionData?.responses?.[0]?.fullTextAnnotation?.text ||
+      visionData?.responses?.[0]?.textAnnotations?.[0]?.description ||
+      "";
+
+    if (!fullText || fullText.trim().length < 20) {
+      await chrome.storage.local.set({
+        currentTask: {
+          type: "ocr_factcheck",
+          status: "no_text",
+          imageUrl,
+          extractedText: "",
+          error: "No readable text detected in the image.",
+          timestamp: Date.now()
+        }
+      });
+      return;
+    }
+
+    const extracted = fullText.trim();
+    await chrome.storage.local.set({
+      currentTask: {
+        type: "ocr_factcheck",
+        status: "text_extracted",
+        imageUrl,
+        extractedText: extracted,
+        timestamp: Date.now()
+      }
+    });
+
+    await runTextFactCheck(extracted, imageUrl);
+
+  } catch (error) {
+    await chrome.storage.local.set({
+      currentTask: {
+        type: "ocr_factcheck",
+        status: "error",
+        error: error.message || "OCR analysis failed.",
+        timestamp: Date.now()
+      }
+    });
+  }
+}
+
+// ── Text Fact Check (shared by OCR + selection) ──────────────────
+async function runTextFactCheck(text, sourceUrl) {
+  try {
+    await updateOCRTaskStatus("analyzing", "Extracting claims with Gemini AI...");
+    const { userId } = await chrome.storage.local.get("userId");
+
+    const response = await fetch(OCR_FACTCHECK_API, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        text,
+        source_url: sourceUrl || "extension_ocr",
+        user_id: userId || "anonymous",
+        source: "extension"
+      })
+    });
+
+    if (!response.ok) {
+      throw new Error(`API error: ${response.status}`);
+    }
+
+    const report = await response.json();
+    await chrome.storage.local.set({
+      currentTask: {
+        type: "ocr_factcheck",
+        status: "complete",
+        report,
+        timestamp: Date.now()
+      },
+      lastReport: report
+    });
+
+  } catch (error) {
+    await chrome.storage.local.set({
+      currentTask: {
+        type: "ocr_factcheck",
+        status: "error",
+        error: error.message || "Fact-check failed.",
+        timestamp: Date.now()
+      }
+    });
+  }
+}
+
+// ── Page Fact Check ──────────────────────────────────────────────
+async function runPageFactCheck(url) {
+  try {
+    const { userId } = await chrome.storage.local.get("userId");
+    const response = await fetch(TEXT_ANALYSIS_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        url: url,
+        article_text: "",
+        user_id: userId || "anonymous",
+        source: "extension"
+      })
+    });
+    const data = await response.json();
+    await chrome.storage.local.set({
+      currentTask: {
+        type: "page_factcheck",
+        status: "complete",
+        report: data,
+        timestamp: Date.now()
+      }
+    });
+  } catch (error) {
+    await chrome.storage.local.set({
+      currentTask: {
+        type: "page_factcheck",
+        status: "error",
+        error: error.message || "Page analysis failed.",
+        timestamp: Date.now()
+      }
+    });
+  }
+}
+
+// ── Helpers ──────────────────────────────────────────────────────
+async function updateOCRTaskStatus(status, message) {
+  const { currentTask } = await chrome.storage.local.get("currentTask");
+  await chrome.storage.local.set({
+    currentTask: {
+      ...(currentTask || {}),
+      status,
+      statusMessage: message,
+      lastUpdated: Date.now()
+    }
+  });
+}
+
+function blobToBase64(blob) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onloadend = () => resolve(reader.result);
+    reader.onerror = reject;
+    reader.readAsDataURL(blob);
+  });
+}
+
+// Injected into page context to bypass CORS (canvas approach)
+function fetchImageAsBase64ViaCanvas(url) {
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.crossOrigin = "anonymous";
+    img.onload = () => {
+      try {
+        const canvas = document.createElement("canvas");
+        canvas.width = img.naturalWidth;
+        canvas.height = img.naturalHeight;
+        const ctx = canvas.getContext("2d");
+        ctx.drawImage(img, 0, 0);
+        const dataUrl = canvas.toDataURL("image/jpeg", 0.85);
+        resolve(dataUrl.split(",")[1]);
+      } catch (_e) {
+        resolve(null);
+      }
+    };
+    img.onerror = () => resolve(null);
+    img.src = url;
+  });
+}
+
 console.log("Background script loaded and running.");

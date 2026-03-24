@@ -39,222 +39,41 @@
       transition: background-color 0.3s ease, border-color 0.3s ease;
     }
 
-    /* ============================================
-       PREMIUM ANALYZING OVERLAY
-    ============================================ */
-    #analyzingOverlay {
-      display: none;
-      position: fixed;
-      inset: 0;
-      z-index: 9999;
-      background: linear-gradient(135deg, rgba(240,237,255,0.97) 0%, rgba(255,255,255,0.97) 100%);
-      backdrop-filter: blur(20px);
-      -webkit-backdrop-filter: blur(20px);
-      flex-direction: column;
-      align-items: center;
-      justify-content: center;
-      padding: 2rem;
-      font-family: 'Inter', sans-serif;
-    }
-
-    #analyzingOverlay.visible {
-      display: flex;
-      animation: overlayFadeIn 0.4s ease;
-    }
-
-    @keyframes overlayFadeIn {
-      from { opacity: 0; transform: scale(0.98); }
-      to   { opacity: 1; transform: scale(1); }
-    }
-
-    /* Pulsing rings */
-    .ts-ring-wrapper {
-      position: relative;
-      width: 90px;
-      height: 90px;
-      margin-bottom: 2rem;
-    }
-
-    .ts-ring {
-      position: absolute;
-      inset: 0;
-      border-radius: 50%;
-      border: 3px solid;
-      animation: ringPulse 2s ease-out infinite;
-      opacity: 0;
-    }
-
-    .ts-ring:nth-child(1) { border-color: #7c3aed; animation-delay: 0s; }
-    .ts-ring:nth-child(2) { border-color: #9333ea; animation-delay: 0.6s; }
-    .ts-ring:nth-child(3) { border-color: #a855f7; animation-delay: 1.2s; }
-
-    @keyframes ringPulse {
-      0%   { transform: scale(0.7); opacity: 0.9; }
-      100% { transform: scale(1.8); opacity: 0; }
-    }
-
-    .ts-core-icon {
-      position: absolute;
-      inset: 0;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      background: linear-gradient(135deg, #7c3aed, #a855f7);
-      border-radius: 50%;
-      box-shadow: 0 8px 30px rgba(124,58,237,0.4);
-    }
-
-    .ts-core-icon svg {
-      width: 36px;
-      height: 36px;
-      color: white;
-      animation: iconSpin 3s linear infinite;
-    }
-
-    @keyframes iconSpin {
-      0%   { transform: rotate(0deg); }
-      100% { transform: rotate(360deg); }
-    }
-
-    /* Steps list */
-    .ts-steps {
-      width: 100%;
-      max-width: 280px;
-      display: flex;
-      flex-direction: column;
-      gap: 0.6rem;
-      margin-bottom: 1.5rem;
-    }
-
-    .ts-step {
-      display: flex;
-      align-items: center;
-      gap: 0.75rem;
-      padding: 0.7rem 1rem;
-      border-radius: 0.75rem;
-      background: rgba(255,255,255,0.6);
-      border: 1px solid rgba(124,58,237,0.12);
-      transition: all 0.3s ease;
-      opacity: 0.4;
-    }
-
-    .ts-step.active {
-      opacity: 1;
-      background: rgba(124,58,237,0.08);
-      border-color: rgba(124,58,237,0.3);
-      transform: translateX(4px);
-    }
-
-    .ts-step.done {
-      opacity: 0.6;
-    }
-
-    .ts-step-dot {
-      width: 28px;
-      height: 28px;
-      border-radius: 50%;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      font-size: 13px;
-      flex-shrink: 0;
-      background: #f3f0ff;
-      border: 2px solid #ddd8fe;
-      transition: all 0.3s ease;
-    }
-
-    .ts-step.active .ts-step-dot {
-      background: #7c3aed;
-      border-color: #7c3aed;
-      color: white;
-      animation: dotPulse 1s ease infinite alternate;
-    }
-
-    .ts-step.done .ts-step-dot {
-      background: #10b981;
-      border-color: #10b981;
-      color: white;
-    }
-
-    @keyframes dotPulse {
-      from { box-shadow: 0 0 0 0 rgba(124,58,237,0.5); }
-      to   { box-shadow: 0 0 0 6px rgba(124,58,237,0); }
-    }
-
-    .ts-step-text {
-      font-size: 0.8rem;
-      font-weight: 600;
-      color: #374151;
-    }
-
-    .ts-step.active .ts-step-text {
-      color: #5b21b6;
-    }
-
-    /* Animated progress bar */
-    .ts-progress-bar {
-      width: 100%;
-      max-width: 280px;
-      height: 4px;
-      background: #ede9fe;
-      border-radius: 9999px;
-      overflow: hidden;
-    }
-
-    .ts-progress-fill {
-      height: 100%;
-      background: linear-gradient(90deg, #7c3aed, #a855f7, #7c3aed);
-      background-size: 200% 100%;
-      border-radius: 9999px;
-      transition: width 0.8s ease;
-      animation: shimmer 2s linear infinite;
-    }
-
-    @keyframes shimmer {
-      0%   { background-position: 200% 0; }
-      100% { background-position: -200% 0; }
-    }
-
-    .ts-status-text {
-      margin-top: 0.9rem;
-      font-size: 0.78rem;
-      font-weight: 600;
-      color: #6d28d9;
-      letter-spacing: 0.05em;
-      text-transform: uppercase;
-      animation: textFade 1.5s ease infinite alternate;
-    }
-
-    @keyframes textFade {
-      from { opacity: 0.6; }
-      to   { opacity: 1; }
-    }
-
-    /* Legacy loading placeholder (still used for small sections) */
+    /* Loading spinner */
     .loading-placeholder {
       display: flex;
       align-items: center;
       justify-content: center;
       padding: 1rem;
       border-radius: 0.5rem;
+      /* md */
       font-weight: 500;
       color: #6b7280;
+      /* gray-500 */
       background-color: #f3f4f6;
+      /* gray-100 */
       min-height: 60px;
+      /* Ensure some height */
     }
 
     .loading-placeholder .spinner {
       width: 1.25rem;
+      /* w-5 */
       height: 1.25rem;
+      /* h-5 */
       border: 3px solid #9ca3af;
+      /* gray-400 */
       border-top-color: transparent;
       border-radius: 50%;
       animation: spin 1s linear infinite;
       margin-right: 0.75rem;
+      /* mr-3 */
     }
 
     @keyframes spin {
-      to { transform: rotate(360deg); }
+      to {
+        transform: rotate(360deg);
+      }
     }
 
     /* Status Badge Styles */
@@ -654,55 +473,6 @@
         </svg>
       </button>
     </div>
-
-    <!-- ===== PREMIUM ANALYZING OVERLAY ===== -->
-    <div id="analyzingOverlay">
-      <!-- Pulsing Ring Animation -->
-      <div class="ts-ring-wrapper">
-        <div class="ts-ring"></div>
-        <div class="ts-ring"></div>
-        <div class="ts-ring"></div>
-        <div class="ts-core-icon">
-          <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"
-              d="M9.813 15.904 9 18.75l-.813-2.846a4.5 4.5 0 0 0-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 0 0 3.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 0 0 3.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 0 0-3.09 3.09Z" />
-          </svg>
-        </div>
-      </div>
-
-      <p style="font-size:1.1rem;font-weight:700;color:#3b0764;margin-bottom:1.5rem;letter-spacing:-0.02em;">TruthScope is Analyzing...</p>
-
-      <!-- Animated Pipeline Steps -->
-      <div class="ts-steps" id="analyzingSteps">
-        <div class="ts-step" id="step-scraping">
-          <div class="ts-step-dot">🌐</div>
-          <span class="ts-step-text">Scraping Article</span>
-        </div>
-        <div class="ts-step" id="step-claims">
-          <div class="ts-step-dot">🧠</div>
-          <span class="ts-step-text">Extracting Claims</span>
-        </div>
-        <div class="ts-step" id="step-evidence">
-          <div class="ts-step-dot">🔍</div>
-          <span class="ts-step-text">Gathering Evidence</span>
-        </div>
-        <div class="ts-step" id="step-verify">
-          <div class="ts-step-dot">⚖️</div>
-          <span class="ts-step-text">Verifying with AI</span>
-        </div>
-        <div class="ts-step" id="step-report">
-          <div class="ts-step-dot">📊</div>
-          <span class="ts-step-text">Building Report</span>
-        </div>
-      </div>
-
-      <!-- Progress Bar -->
-      <div class="ts-progress-bar">
-        <div class="ts-progress-fill" id="analyzingProgress" style="width: 10%"></div>
-      </div>
-      <p class="ts-status-text" id="analyzingStatusText">Initializing pipeline...</p>
-    </div>
-    <!-- ===== END OVERLAY ===== -->
 
     <!-- Combined Credibility Score Card -->
     <div class="card">

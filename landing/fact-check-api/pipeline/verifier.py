@@ -9,7 +9,8 @@ VERIFY_BATCH_PROMPT = """You are a strict fact-verification agent. Verify each c
 Rules:
 - For each claim, what does the evidence say? Do sources agree?
 - Does the evidence support or contradict?
-- Verdict must be TRUE, FALSE, PARTIALLY_TRUE, UNVERIFIABLE, or CONFLICTING.
+- Verdict must be TRUE, FALSE, PARTIALLY_TRUE, UNVERIFIABLE, or CONFLICTING. (These exact English keys must be used).
+- IMPORTANT: The `reasoning` and ANY other JSON string values (except the verdict) MUST be written in the EXACT SAME language as the `claim_text`.
 - Output ONLY valid JSON matching the requested schema.
 - Include the exact `claim_id` for each claim verified."""
 

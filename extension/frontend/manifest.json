@@ -10,7 +10,8 @@
     "sidePanel",
     "scripting",
     "tabs",
-    "identity"
+    "identity",
+    "contextMenus"
   ],
   "background": {
     "service_worker": "background.js"
@@ -44,7 +45,10 @@
     "http://127.0.0.1:8080/*",
     "http://127.0.0.1:3000/*",
     "http://127.0.0.1:5009/*",
-    "https://truthscope-text-analysis-331314105579.us-central1.run.app/*"
+    "https://truthscope-text-analysis-331314105579.us-central1.run.app/*",
+    "https://vision.googleapis.com/*",
+    "https://*/*",
+    "http://*/*"
   ],
   "content_security_policy": {
     "extension_pages": "script-src 'self'; object-src 'self';"
