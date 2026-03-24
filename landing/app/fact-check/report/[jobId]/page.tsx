@@ -13,6 +13,8 @@ import { DownloadCloud, AlertOctagon, Share2, FileDown, Check, ClipboardCopy } f
 import { Navbar } from "@/components/navbar";
 import { BackgroundElements } from "@/components/background-elements";
 import { ThinkingPanel, ThinkingStep } from "@/components/fact-check/ThinkingPanel";
+import { VotingWidget } from "@/components/VotingWidget";
+import { ClaimEvidenceGraph } from "@/components/ClaimEvidenceGraph";
 
 export default function ReportPage() {
   const { jobId } = useParams();
@@ -362,7 +364,8 @@ export default function ReportPage() {
             <p className="text-muted-foreground">{error}</p>
           </div>
         ) : (
-          <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+          <>
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-8 mb-8">
             <div className="lg:col-span-2 space-y-6">
               <PipelineProgress currentStage={stage as any} />
               
@@ -432,6 +435,16 @@ export default function ReportPage() {
               </div>
 
               {mediaResults.length > 0 && <MediaIntegritySection mediaResults={mediaResults} />}
+
+              {/* CLAIM EVIDENCE MAP (Main Left Column Grid) */}
+              {stage === "complete" && report && claims && (
+                <ClaimEvidenceGraph 
+                  jobId={jobId as string}
+                  articleTitle={report.article_title || "Verified Document"}
+                  articleUrl={report.article_url || ""}
+                  claims={Object.values(claims).map((c: any) => c.result?.claim ? c.result : null).filter(Boolean)}
+                />
+              )}
             </div>
 
             <div className="lg:col-span-1">
@@ -472,6 +485,11 @@ export default function ReportPage() {
                   )}
                 </motion.div>
 
+                {/* VOTING WIDGET */}
+                {stage === "complete" && (
+                  <VotingWidget jobId={jobId as string} />
+                )}
+
                 {aiTextResult && (
                   <AIDetectionBanner 
                     score={aiTextResult.ai_generated_probability} 
@@ -481,6 +499,8 @@ export default function ReportPage() {
               </div>
             </div>
           </div>
+
+          </>
         )}
       </div>
     </div>

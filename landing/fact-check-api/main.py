@@ -194,6 +194,30 @@ async def fact_check_generator(job_id: str):
             
             await think("bar-chart", "Building accuracy report", "Calculating overall credibility score...")
             final_report = build_report(claim_reports)
+            
+            # --- SUSPICIOUS DOMAIN CHECK ---
+            if source_domain and SessionLocal:
+                db = SessionLocal()
+                try:
+                    from models.database import SuspiciousDomain
+                    is_fake = db.query(SuspiciousDomain).filter(SuspiciousDomain.domain == source_domain).first()
+                    base_domain = f"{source_domain.split('.')[-2]}.{source_domain.split('.')[-1]}" if len(source_domain.split('.')) >= 2 else source_domain
+                    if not is_fake:
+                        is_fake = db.query(SuspiciousDomain).filter(SuspiciousDomain.domain == base_domain).first()
+                        
+                    hardcoded_fakes = {"theonion.com": "Satire", "babylonbee.com": "Satire", "infowars.com": "Conspiracy/Fake News"}
+                    fake_reason = (is_fake.reason if is_fake else None) or hardcoded_fakes.get(base_domain)
+                    
+                    if fake_reason:
+                        await think("alert-triangle", "Suspicious Domain Detected", f"Domain '{base_domain}' is flagged as {fake_reason}.")
+                        final_report.article_title = f"[WARNING: {fake_reason.upper()} SOURCE] " + (final_report.article_title or "")
+                        final_report.summary = f"⚠️ WARNING: This article originates from {base_domain}, a known {fake_reason} domain. Please evaluate the following claims with strong caution, even if some individual statements are factually accurate.\n\n" + (final_report.summary or "")
+                except Exception as e:
+                    logger.error(f"Error checking suspicious domains: {e}")
+                finally:
+                    db.close()
+            # -------------------------------
+            
             await think("sparkles", f"Analysis Complete — Score: {final_report.overall_score}%", "Report ready for review")
             
             # Save completed report for shared links & history (Legacy in-memory fallback)
@@ -671,3 +695,225 @@ Return ONLY valid JSON matching the exact schema provided. Provide a summary of 
             sentiment={"label": "neutral", "score": 0.0},
             bias={"summary": f"Analysis failed: {str(e)}", "indicators": []}
         )
+
+# ==========================================
+# LEADERBOARD & VOTING ENDPOINTS
+# ==========================================
+
+from pydantic import BaseModel
+from typing import Optional
+from datetime import datetime, timedelta
+from sqlalchemy import func
+from models.database import SessionLocal, FactCheckReport, VotingRecord
+
+class VoteRequest(BaseModel):
+    vote_type: str  # "up" or "down"
+    user_id: str
+
+@app.get("/api/leaderboard")
+async def get_leaderboard(timeframe: str = "week"):
+    if not SessionLocal:
+        return {"error": "Database not configured"}
+        
+    db = SessionLocal()
+    try:
+        now = datetime.utcnow()
+        if timeframe == "week":
+            start_date = now - timedelta(days=7)
+        elif timeframe == "month":
+            start_date = now - timedelta(days=30)
+        else:
+            start_date = datetime.min
+            
+        # Group by url_hash to deduplicate
+        # We want the WORST credibility (minimum overall_score)
+        
+        # Subquery to find min overall_score and max created_at per url_hash
+        # Since sqlite/basic setup might not support complex distinct on, we fetch and aggregate in python if needed, 
+        query = db.query(FactCheckReport).filter(
+            FactCheckReport.created_at >= start_date,
+            FactCheckReport.overall_score <= 60  # Only show actual misinformation!
+        ).all()
+        
+        grouped = {}
+        for report in query:
+            # Group by url_hash for URLs, or input_content for raw text scans
+            uh = report.url_hash if report.url_hash else str(report.input_content)[:50]
+            if not uh:
+                uh = report.job_id
+                
+            if uh not in grouped:
+                grouped[uh] = {
+                    "report": report,
+                    "scans": 1
+                }
+            else:
+                grouped[uh]["scans"] += 1
+                # Keep the one with the worst score
+                if getattr(report, "overall_score", 100) is not None and getattr(grouped[uh]["report"], "overall_score", 100) is not None:
+                    if report.overall_score < grouped[uh]["report"].overall_score:
+                        grouped[uh]["report"] = report
+                        
+        # Sort by overall score ASC (lowest first)
+        def get_score(report_dict):
+            val = getattr(report_dict["report"], "overall_score", 100)
+            return val if val is not None else 100
+            
+        sorted_groups = sorted(grouped.values(), key=get_score)
+        top_20 = sorted_groups[:20]
+        
+        leaderboard_data = []
+        for idx, item in enumerate(top_20):
+            rep = item["report"]
+            try:
+                r_json = json.loads(rep.report_json) if rep.report_json else {}
+                c_json = json.loads(rep.claims_json) if rep.claims_json else {}
+            except:
+                r_json = {}
+                c_json = {}
+                
+            worst_claim = ""
+            for claim_id, c_data in c_json.items():
+                res = c_data.get("result", {})
+                verif = res.get("verification", {})
+                if verif.get("verdict") == "FALSE":
+                    worst_claim = res.get("claim", {}).get("claim_text", "")
+                    break
+            if not worst_claim:
+                # Fallback to any claim
+                for claim_id, c_data in c_json.items():
+                    worst_claim = c_data.get("result", {}).get("claim", {}).get("claim_text", "")
+                    break
+                    
+            domain = ""
+            if rep.input_type == "url" and rep.input_content:
+                from urllib.parse import urlparse
+                try:
+                    domain = urlparse(rep.input_content).netloc
+                except:
+                    pass
+                    
+            title = r_json.get("article_title")
+            if not title or title.lower() == "unknown title":
+                title = worst_claim or (str(rep.input_content)[:50] + "..." if rep.input_content else "Unknown Scan")
+                
+            leaderboard_data.append({
+                "rank": idx + 1,
+                "article_title": title,
+                "article_url": rep.input_content if rep.input_type == "url" else "",
+                "overall_score": rep.overall_score or 0,
+                "verdict": r_json.get("verdict", "UNVERIFIABLE"),
+                "scan_count": item["scans"],
+                "worst_claim": worst_claim,
+                "job_id": rep.job_id,
+                "domain": domain
+            })
+            
+        # Stats
+        total_scanned = db.query(func.count(FactCheckReport.id)).filter(FactCheckReport.created_at >= start_date).scalar() or 0
+        total_claims_verified = db.query(func.sum(FactCheckReport.total_claims)).filter(FactCheckReport.created_at >= start_date).scalar() or 0
+        
+        return {
+            "leaderboard": leaderboard_data,
+            "total_articles_scanned": total_scanned,
+            "total_claims_verified": total_claims_verified,
+            "timeframe": timeframe
+        }
+    except Exception as e:
+        logger.error(f"Leaderboard error: {e}")
+        return {"error": str(e)}
+    finally:
+        db.close()
+
+
+@app.post("/api/fact-check/report/{job_id}/vote")
+async def cast_vote(job_id: str, request: VoteRequest):
+    if not SessionLocal:
+        return {"error": "Database not configured"}
+        
+    db = SessionLocal()
+    try:
+        if request.vote_type not in ["up", "down"]:
+            return {"error": "Invalid vote type"}
+            
+        report = db.query(FactCheckReport).filter(FactCheckReport.job_id == job_id).first()
+        if not report:
+            return {"error": "Report not found"}
+            
+        # Check existing vote
+        existing_vote = db.query(VotingRecord).filter(
+            VotingRecord.job_id == job_id,
+            VotingRecord.user_id == request.user_id
+        ).first()
+        
+        if existing_vote:
+            if existing_vote.vote_type == request.vote_type:
+                # Same vote, do nothing or remove? The prompt says "Already voted"
+                return {"error": "Already voted"}
+            else:
+                # Switch vote
+                if existing_vote.vote_type == "up":
+                    report.upvotes = max(0, (report.upvotes or 0) - 1)
+                    report.downvotes = (report.downvotes or 0) + 1
+                else:
+                    report.downvotes = max(0, (report.downvotes or 0) - 1)
+                    report.upvotes = (report.upvotes or 0) + 1
+                existing_vote.vote_type = request.vote_type
+        else:
+            # New vote
+            new_vote = VotingRecord(
+                job_id=job_id,
+                user_id=request.user_id,
+                vote_type=request.vote_type
+            )
+            db.add(new_vote)
+            if request.vote_type == "up":
+                report.upvotes = (report.upvotes or 0) + 1
+            else:
+                report.downvotes = (report.downvotes or 0) + 1
+                
+        db.commit()
+        db.refresh(report)
+        
+        return {
+            "upvotes": report.upvotes or 0,
+            "downvotes": report.downvotes or 0,
+            "user_vote": request.vote_type
+        }
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Vote error: {e}")
+        return {"error": str(e)}
+    finally:
+        db.close()
+
+
+@app.get("/api/fact-check/report/{job_id}/votes")
+async def get_votes(job_id: str, user_id: Optional[str] = None):
+    if not SessionLocal:
+        return {"error": "Database not configured"}
+        
+    db = SessionLocal()
+    try:
+        report = db.query(FactCheckReport).filter(FactCheckReport.job_id == job_id).first()
+        if not report:
+            return {"error": "Report not found"}
+            
+        user_vote = None
+        if user_id:
+            existing_vote = db.query(VotingRecord).filter(
+                VotingRecord.job_id == job_id,
+                VotingRecord.user_id == user_id
+            ).first()
+            if existing_vote:
+                user_vote = existing_vote.vote_type
+                
+        return {
+            "upvotes": report.upvotes or 0,
+            "downvotes": report.downvotes or 0,
+            "user_vote": user_vote
+        }
+    except Exception as e:
+        return {"error": str(e)}
+    finally:
+        db.close()

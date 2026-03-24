@@ -36,6 +36,28 @@ class FactCheckReport(Base):
     overall_score = Column(Integer, nullable=True)
     total_claims = Column(Integer, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
+    upvotes = Column(Integer, nullable=False, default=0)
+    downvotes = Column(Integer, nullable=False, default=0)
+
+
+class VotingRecord(Base):
+    """Tracks user votes on fact checks to prevent double-voting"""
+    __tablename__ = "voting_records"
+
+    id = Column(Integer, primary_key=True, index=True)
+    job_id = Column(String(64), index=True, nullable=False)
+    user_id = Column(String(128), index=True, nullable=False)
+    vote_type = Column(String(10), nullable=False)  # "up" or "down"
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class SuspiciousDomain(Base):
+    """List of known fake news, heavily biased, or satirical domains"""
+    __tablename__ = "suspicious_domains"
+
+    id = Column(Integer, primary_key=True, index=True)
+    domain = Column(String(255), unique=True, index=True, nullable=False)
+    reason = Column(String(255), nullable=True) # e.g. "Satire", "Fake News Network"
 
 
 # Initialize all tables

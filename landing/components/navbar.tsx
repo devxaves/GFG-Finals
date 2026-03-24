@@ -78,6 +78,13 @@ export function Navbar() {
             History
             <span className="absolute -bottom-1 left-0 h-0.5 bg-gradient-to-r from-primary to-purple-600 transition-all duration-300 w-0 group-hover:w-full" />
           </Link>
+          <Link
+            href="/leaderboard"
+            className="text-sm font-bold text-purple-600 hover:text-primary transition-all duration-300 relative group cursor-pointer"
+          >
+            Leaderboard
+            <span className="absolute -bottom-1 left-0 h-0.5 bg-gradient-to-r from-primary to-purple-600 transition-all duration-300 w-0 group-hover:w-full" />
+          </Link>
           {[
             { href: "hero", label: "Home" },
             { href: "features", label: "Features" },
@@ -143,6 +150,13 @@ export function Navbar() {
               className="text-sm font-bold text-blue-400 bg-blue-500/10 px-2 py-1.5 rounded-md"
             >
               Fact Checker
+            </Link>
+            <Link
+              href="/leaderboard"
+              onClick={() => setIsMenuOpen(false)}
+              className="text-sm font-bold text-purple-600 bg-purple-500/10 px-2 py-1.5 rounded-md"
+            >
+              Leaderboard
             </Link>
             {[
               { href: "hero", label: "Home" },
